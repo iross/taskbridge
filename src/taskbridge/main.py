@@ -188,15 +188,8 @@ def _start_timer_for_issue(issue):
     else:
         typer.echo("📝 Issue has no project assignment")
     
-    # Create the timer description (shorter, cleaner format)
+    # Create the timer description (clean format without IDs)
     description = issue.title
-    # Only add issue ID if it's reasonably short (Linear IDs can be very long)
-    if issue.id and len(issue.id) <= 20:
-        description += f" ({issue.id})"
-    elif issue.id:
-        # For long IDs, just add the first part
-        short_id = issue.id.split('-')[0] if '-' in issue.id else issue.id[:10]
-        description += f" ({short_id}...)"
     
     # Start the timer
     typer.echo("⏱️  Starting Toggl timer...")
