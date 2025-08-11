@@ -20,7 +20,7 @@ Build functionality to create structured task-specific notes in Obsidian with pr
 
 - [ ] Notes created in vault_path/notes_folder/Client/Project/ directory structure
 - [ ] Note filename format: YYYY-MM-DD - Task Name.md
-- [ ] Frontmatter includes: client project todoist_task_id toggl_project_id created_date task_url
+- [ ] Frontmatter includes: client project linear_issue_id toggl_project_id created_date task_url
 - [ ] Note body template includes task description and empty sections for notes/progress
 - [ ] Automatic folder creation for new Client/Project combinations
 - [ ] Integration with existing project mappings from sync engine

@@ -24,7 +24,7 @@ Build the full command-line interface with all required commands for TaskBridge 
 - [ ] status
 - [ ] stop
 - [ ] list-projects
-- [ ] Search command displays Todoist tasks with interactive selection
+- [ ] Search command displays Linear issues with interactive selection
 - [ ] Start command supports both direct task ID and interactive search fallback
 - [ ] Auto-stops current timer when starting new ones
 - [ ] Status command shows detailed current timer information
