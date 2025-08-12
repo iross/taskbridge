@@ -157,6 +157,27 @@ class Database:
                 )
             return None
     
+    def get_project_by_toggl_id(self, toggl_project_id: str) -> Optional[Project]:
+        """Get a project by Toggl project ID."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute("""
+                SELECT * FROM projects WHERE toggl_project_id = ?
+            """, (toggl_project_id,))
+            
+            row = cursor.fetchone()
+            if row:
+                return Project(
+                    id=row['id'],
+                    linear_id=row['linear_id'],
+                    linear_name=row['linear_name'],
+                    toggl_client_id=row['toggl_client_id'],
+                    toggl_project_id=row['toggl_project_id'],
+                    created_at=datetime.fromisoformat(row['created_at']) if row['created_at'] else None,
+                    updated_at=datetime.fromisoformat(row['updated_at']) if row['updated_at'] else None
+                )
+            return None
+    
     def get_all_projects(self) -> List[Project]:
         """Get all project mappings."""
         with sqlite3.connect(self.db_path) as conn:
