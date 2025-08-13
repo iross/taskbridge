@@ -93,7 +93,7 @@ def open_note():
         # Check if the note exists, create if needed
         vault_path = config_manager.get_obsidian_vault_path()
         note_path = Path(vault_path) / "10 Projects" / project_name / note_filename
-        
+
         if not note_path.exists():
             typer.echo("📝 Creating project directory and note...")
             try:
@@ -106,7 +106,7 @@ def open_note():
             except Exception as e:
                 typer.echo(f"❌ Failed to create note: {e}")
                 return
-        
+
         # Try to open the note
         if config_manager.open_obsidian_note(project_name, note_filename):
             typer.echo(f"📖 Opened note for: {task_title}")
@@ -153,6 +153,9 @@ def search(query: str):
             typer.echo("No issues found.")
             return
 
+        # Get project information for name lookups
+        projects = {project.id: project.name for project in linear_api.get_projects()}
+
         typer.echo(f"\nFound {len(issues)} issue(s):")
         typer.echo("-" * 50)
 
@@ -161,7 +164,14 @@ def search(query: str):
             typer.echo(f"  Title: {issue.title}")
             if issue.description:
                 typer.echo(f"  Description: {issue.description}")
-            typer.echo(f"  Project ID: {issue.project_id}")
+
+            # Show project ID and name
+            if issue.project_id:
+                project_name = projects.get(issue.project_id, "Unknown")
+                typer.echo(f"  Project: {project_name} (ID: {issue.project_id})")
+            else:
+                typer.echo("  Project: None")
+
             typer.echo(f"  Priority: {issue.priority}")
             if issue.estimate:
                 typer.echo(f"  Estimate: {issue.estimate}")
@@ -175,7 +185,8 @@ def search(query: str):
 @app.command()
 def start(
     issue_id: Optional[str] = None,
-    debug: bool = typer.Option(False, "--debug", "-d", help="Enable debug logging")
+    debug: bool = typer.Option(False, "--debug", "-d", help="Enable debug logging"),
+    note: bool = typer.Option(False, "--note", "-n", help="Create/open Obsidian note")
 ):
     """Start Toggl timer for a Linear issue."""
     if debug:
@@ -202,21 +213,27 @@ def start(
                 typer.echo("No issues found.")
                 return
 
+            # Get project information for name lookups
+            projects = {project.id: project.name for project in linear_api.get_projects()}
+
             # Show issues for selection with more details
             typer.echo(f"\nFound {len(issues)} issue(s):")
             typer.echo("-" * 60)
             for i, issue in enumerate(issues, 1):
-                project_name = ""
-                if hasattr(issue, 'project') and issue.project_id:
-                    # We could fetch project name, but for now just show ID
-                    project_name = f" [Project: {issue.project_id[:8]}...]"
+                project_info = ""
+                if issue.project_id:
+                    project_name = projects.get(issue.project_id, "Unknown")
+                    # Truncate long project names for display
+                    if len(project_name) > 25:
+                        project_name = project_name[:22] + "..."
+                    project_info = f" [Project: {project_name}]"
 
                 # Truncate long titles
                 title = issue.title
-                if len(title) > 50:
-                    title = title[:47] + "..."
+                if len(title) > 45:  # Reduced to make room for project name
+                    title = title[:42] + "..."
 
-                typer.echo(f"{i:2d}. {title}{project_name}")
+                typer.echo(f"{i:2d}. {title}{project_info}")
 
                 # Show a bit of context
                 if issue.priority and issue.priority > 0:
@@ -254,14 +271,14 @@ def start(
                 return
 
         # Now we have selected_issue, start the timer
-        _start_timer_for_issue(selected_issue)
+        _start_timer_for_issue(selected_issue, create_note=note)
 
     except Exception as e:
         typer.echo(f"❌ Error starting timer: {e}")
         raise typer.Exit(1)
 
 
-def _start_timer_for_issue(issue):
+def _start_timer_for_issue(issue, create_note: bool = False):
     """Helper function to start a Toggl timer for a Linear issue."""
     typer.echo(f"Starting timer for: {issue.title}")
 
@@ -298,8 +315,8 @@ def _start_timer_for_issue(issue):
     else:
         typer.echo("📝 Issue has no project assignment")
 
-    # Handle Obsidian note creation and opening if configured
-    if config_manager.get_obsidian_vault_path() and project_name:
+    # Handle Obsidian note creation and opening if requested and configured
+    if create_note and config_manager.get_obsidian_vault_path() and project_name:
         typer.echo("📝 Creating Obsidian note...")
         try:
             note_path = config_manager.create_task_note(
