@@ -335,9 +335,8 @@ class LinearAPI:
     def parse_client_project_name(self, labels: List[str]) -> Tuple[Optional[str], Optional[str]]:
         """Parse client name from project labels.
         
-        Supports two formats:
-        1. #client/CLIENT_NAME format (original)
-        2. Simple CLIENT_NAME labels (e.g., "CHTC", "ACME")
+        Only recognizes the #client/CLIENT_NAME format for creating Toggl clients.
+        Other labels are ignored and will not create clients in Toggl.
         
         Args:
             labels: List of label names to search through
@@ -354,13 +353,7 @@ class LinearAPI:
                 if client_part.strip():
                     return client_part.strip(), None
         
-        # If no #client/ format found, use the first label as client name
-        # This assumes you use labels like "CHTC", "ACME" to indicate clients
-        for label in labels:
-            if label and not label.startswith('#'):
-                # Simple label like "CHTC" - use as client name
-                return label.strip(), None
-        
+        # Only recognize #client/ format - other labels should not create clients
         return None, None
     
     def get_projects_with_parsed_names(self) -> List[Tuple[LinearProject, Optional[str], Optional[str]]]:
