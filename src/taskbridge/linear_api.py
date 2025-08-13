@@ -123,7 +123,12 @@ class LinearAPI:
                     url
                     labels {
                         nodes {
+                            id
                             name
+                            parent {
+                                id
+                                name
+                            }
                         }
                     }
                 }
@@ -143,9 +148,16 @@ class LinearAPI:
             members = project_data.get('members', {}).get('nodes', [])
             member_ids = [member['id'] for member in members]
             
-            # Extract label names
+            # Extract labels with parent information
             labels_data = project_data.get('labels', {}).get('nodes', [])
-            labels = [label['name'] for label in labels_data]
+            labels = []
+            for label in labels_data:
+                label_info = {
+                    'id': label.get('id'),
+                    'name': label.get('name'),
+                    'parent': label.get('parent')
+                }
+                labels.append(label_info)
             
             projects.append(LinearProject(
                 id=project_data['id'],
@@ -332,28 +344,46 @@ class LinearAPI:
         """Get recent active issues, ordered by last update."""
         return self.get_issues(limit=limit)
     
-    def parse_client_project_name(self, labels: List[str]) -> Tuple[Optional[str], Optional[str]]:
+    def parse_client_project_name(self, labels: list) -> Tuple[Optional[str], Optional[str]]:
         """Parse client name from project labels.
         
-        Only recognizes the #client/CLIENT_NAME format for creating Toggl clients.
-        Other labels are ignored and will not create clients in Toggl.
+        Recognizes two formats:
+        1. #client/CLIENT_NAME format (legacy)
+        2. Labels that have a parent named "client" (preferred)
         
         Args:
-            labels: List of label names to search through
+            labels: List of label objects with id, name, and parent information
         
         Returns:
             Tuple of (client_name, None) or (None, None) if no client found
             Note: The second value is None because Linear projects themselves represent the "project"
         """
-        # First try the #client/CLIENT_NAME format
-        for label in labels:
-            if label.startswith('#client/'):
-                # Remove the #client/ prefix
-                client_part = label[8:]  # len('#client/') = 8
-                if client_part.strip():
-                    return client_part.strip(), None
+        # Handle both old format (list of strings) and new format (list of dicts)
+        if labels and isinstance(labels[0], str):
+            # Legacy format - list of label names
+            for label in labels:
+                if label.startswith('#client/'):
+                    client_part = label[8:]  # len('#client/') = 8
+                    if client_part.strip():
+                        return client_part.strip(), None
+            return None, None
         
-        # Only recognize #client/ format - other labels should not create clients
+        # New format - list of label objects with parent info
+        for label in labels:
+            if isinstance(label, dict):
+                label_name = label.get('name')
+                parent = label.get('parent')
+                
+                # First try the #client/CLIENT_NAME format
+                if label_name and label_name.startswith('#client/'):
+                    client_part = label_name[8:]  # len('#client/') = 8
+                    if client_part.strip():
+                        return client_part.strip(), None
+                
+                # Check if this label has a parent named "client"
+                if parent and parent.get('name') == 'client' and label_name:
+                    return label_name, None
+        
         return None, None
     
     def get_projects_with_parsed_names(self) -> List[Tuple[LinearProject, Optional[str], Optional[str]]]:
