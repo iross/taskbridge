@@ -344,6 +344,42 @@ class LinearAPI:
         """Get recent active issues, ordered by last update."""
         return self.get_issues(limit=limit)
     
+    def create_comment(self, issue_id: str, body: str) -> bool:
+        """Create a comment on a Linear issue.
+        
+        Args:
+            issue_id: The Linear issue ID
+            body: The comment body text
+            
+        Returns:
+            True if comment was created successfully, False otherwise
+        """
+        query = """
+        mutation CreateComment($input: CommentCreateInput!) {
+            commentCreate(input: $input) {
+                success
+                comment {
+                    id
+                    body
+                }
+            }
+        }
+        """
+        
+        variables = {
+            'input': {
+                'issueId': issue_id,
+                'body': body
+            }
+        }
+        
+        try:
+            result = self._make_request(query, variables)
+            return result.get('commentCreate', {}).get('success', False)
+        except Exception as e:
+            self.logger.error(f"Failed to create comment on issue {issue_id}: {e}")
+            return False
+    
     def parse_client_project_name(self, labels: list) -> Tuple[Optional[str], Optional[str]]:
         """Parse client name from project labels.
         

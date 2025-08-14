@@ -335,6 +335,16 @@ def _start_timer_for_issue(issue, create_note: bool = False):
                 # Fallback: show the URL
                 url = config_manager.generate_obsidian_url(project_name, note_path.name)
                 typer.echo(f"   📖 Obsidian URL: {url}")
+            
+            # Add Obsidian URL as comment in Linear
+            url = config_manager.generate_obsidian_url(project_name, note_path.name)
+            comment_body = f"📝 Obsidian note created: [Open in Obsidian]({url})"
+            
+            if linear_api.create_comment(issue.id, comment_body):
+                typer.echo("   💬 Added Obsidian URL to Linear issue")
+            else:
+                typer.echo("   ⚠️  Failed to add comment to Linear issue")
+                
         except Exception as e:
             typer.echo(f"   ⚠️  Failed to create/open Obsidian note: {e}")
 
