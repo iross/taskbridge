@@ -125,19 +125,21 @@ class Config:
             'due': ''
         }
 
-        # Write the note with frontmatter
-        with open(note_path, 'w') as f:
-            f.write("---\n")
-            for key, value in frontmatter.items():
-                if isinstance(value, list):
-                    if value:
-                        f.write(f"{key}: {value}\n")
+        # Only create the note if it doesn't already exist
+        if not note_path.exists():
+            # Write the note with frontmatter
+            with open(note_path, 'w') as f:
+                f.write("---\n")
+                for key, value in frontmatter.items():
+                    if isinstance(value, list):
+                        if value:
+                            f.write(f"{key}: {value}\n")
+                        else:
+                            f.write(f"{key}: []\n")
                     else:
-                        f.write(f"{key}: []\n")
-                else:
-                    f.write(f"{key}: {value}\n")
-            f.write("---\n\n")
-            f.write(f"# {task_title}\n\n")
+                        f.write(f"{key}: {value}\n")
+                f.write("---\n\n")
+                f.write(f"# {task_title}\n\n")
 
         return note_path
 
