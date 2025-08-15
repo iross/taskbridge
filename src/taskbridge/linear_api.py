@@ -253,8 +253,15 @@ class LinearAPI:
             labels=labels
         )
     
-    def get_issues(self, project_id: Optional[str] = None, query: Optional[str] = None, limit: int = 50) -> List[LinearIssue]:
-        """Get Linear issues, optionally filtered by project or query."""
+    def get_issues(self, project_id: Optional[str] = None, query: Optional[str] = None, limit: int = 50, include_done: bool = False) -> List[LinearIssue]:
+        """Get Linear issues, optionally filtered by project or query.
+        
+        Args:
+            project_id: Filter by specific project ID
+            query: Search query for issue titles
+            limit: Maximum number of issues to return
+            include_done: Whether to include completed/canceled issues (default: False)
+        """
         graphql_query = """
         query GetIssues($filter: IssueFilter, $first: Int, $orderBy: PaginationOrderBy) {
             issues(filter: $filter, first: $first, orderBy: $orderBy) {
@@ -306,8 +313,8 @@ class LinearAPI:
         if query:
             filter_conditions['title'] = {'contains': query}
         
-        # For "recent" issues, filter out completed issues unless specifically searching
-        if not query and not project_id:
+        # Filter out completed issues by default unless include_done is True
+        if not include_done:
             # Get active issues (not completed/cancelled)
             filter_conditions['state'] = {'type': {'nin': ['completed', 'canceled']}}
         

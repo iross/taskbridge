@@ -139,7 +139,10 @@ def sync(
 
 
 @app.command()
-def search(query: str):
+def search(
+    query: str,
+    include_done: bool = typer.Option(False, "--include-done", help="Include completed/canceled issues")
+):
     """Search Linear issues."""
     if not linear_api:
         typer.echo("❌ Linear API not configured. Run 'taskbridge config' first.")
@@ -147,7 +150,7 @@ def search(query: str):
 
     try:
         typer.echo(f"Searching Linear for: {query}")
-        issues = linear_api.get_issues(query=query)
+        issues = linear_api.get_issues(query=query, include_done=include_done)
 
         if not issues:
             typer.echo("No issues found.")
@@ -259,7 +262,7 @@ def start(
             # Find the specific issue
             typer.echo(f"Looking up issue: {issue_id}")
             # For now, we'll search by the issue ID - this could be improved
-            issues = linear_api.get_issues(query=issue_id)
+            issues = linear_api.get_issues(query=issue_id, include_done=True)
             selected_issue = None
             for issue in issues:
                 if issue.id == issue_id:
@@ -556,7 +559,8 @@ def list_linear_projects():
 @app.command("list-issues")
 def list_issues(
     project_id: Optional[str] = typer.Option(None, "--project", "-p", help="Filter by project ID"),
-    limit: int = typer.Option(20, "--limit", "-l", help="Maximum number of issues to show")
+    limit: int = typer.Option(20, "--limit", "-l", help="Maximum number of issues to show"),
+    include_done: bool = typer.Option(False, "--include-done", help="Include completed/canceled issues")
 ):
     """Show Linear issues (optionally filtered by project)."""
     if not linear_api:
@@ -569,7 +573,7 @@ def list_issues(
         else:
             typer.echo(f"Fetching Linear issues (limit: {limit})...")
 
-        issues = linear_api.get_issues(project_id=project_id)
+        issues = linear_api.get_issues(project_id=project_id, include_done=include_done)
 
         # Limit results if needed
         if len(issues) > limit:
