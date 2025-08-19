@@ -966,6 +966,12 @@ def taskwarrior_sync(
                     tags = list(issue.labels) if issue.labels else []
                     tags.append("_linear")
                     
+                    # Map special Linear labels to system tags
+                    if issue.labels:
+                        for label in issue.labels:
+                            if label.lower() == "blocked":
+                                tags.append("_blocked")
+                    
                     from .taskwarrior_provider import UniversalIssue
                     universal_issue = UniversalIssue(
                         id="",
@@ -1084,6 +1090,9 @@ def sync_linear_to_taskwarrior(
                     typer.echo(f"   Priority: {priority}")
                 if issue.labels:
                     typer.echo(f"   Labels: {', '.join(issue.labels)}")
+                    # Show if blocked
+                    if any(label.lower() == "blocked" for label in issue.labels):
+                        typer.echo(f"   Status: 🚫 BLOCKED")
                 if issue.estimate:
                     typer.echo(f"   Estimate: {issue.estimate}")
                 typer.echo(f"   Linear URL: {issue.url}")
@@ -1183,6 +1192,12 @@ def sync_linear_to_taskwarrior(
             # Add client tag if we found one
             if client_name:
                 tags.append(f"client:{client_name}")
+            
+            # Map special Linear labels to system tags
+            if issue.labels:
+                for label in issue.labels:
+                    if label.lower() == "blocked":
+                        tags.append("_blocked")
             
             # Check for Obsidian URLs in Linear issue description/comments
             annotations = []
