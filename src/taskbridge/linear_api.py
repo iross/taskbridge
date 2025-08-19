@@ -351,6 +351,40 @@ class LinearAPI:
         """Get recent active issues, ordered by last update."""
         return self.get_issues(limit=limit)
     
+    def get_issue_comments(self, issue_id: str) -> List[Dict[str, Any]]:
+        """Get comments for a specific issue.
+        
+        Args:
+            issue_id: The Linear issue ID
+            
+        Returns:
+            List of comment dictionaries with body, createdAt, etc.
+        """
+        query = """
+        query GetIssueComments($issueId: String!) {
+            issue(id: $issueId) {
+                comments {
+                    nodes {
+                        id
+                        body
+                        createdAt
+                        user {
+                            name
+                        }
+                    }
+                }
+            }
+        }
+        """
+        
+        try:
+            data = self._make_request(query, {"issueId": issue_id})
+            comments = data.get('issue', {}).get('comments', {}).get('nodes', [])
+            return comments
+        except Exception as e:
+            self.logger.error(f"Error fetching comments for issue {issue_id}: {e}")
+            return []
+    
     def create_comment(self, issue_id: str, body: str) -> bool:
         """Create a comment on a Linear issue.
         
