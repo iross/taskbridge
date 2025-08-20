@@ -354,11 +354,31 @@ def _start_timer_for_issue(issue, create_note: bool = False):
                 if client_labels:
                     client_name = client_labels[0].replace('#client/', '')
         else:
-            typer.echo(f"⚠️  No project mapping found for Linear project {issue.project_id}")
-            typer.echo("   Timer will be created without a project.")
-            typer.echo("   Run 'taskbridge sync' to create project mappings.")
+            typer.echo("")
+            typer.echo("🚨🚨🚨 WARNING: NO TOGGL PROJECT MAPPING FOUND! 🚨🚨🚨")
+            typer.echo(f"⚠️  Linear project '{issue.project_id}' is not synced to Toggl")
+            typer.echo("⚠️  Timer will be created WITHOUT a project assignment")
+            typer.echo("⚠️  This means time tracking won't be properly categorized!")
+            typer.echo("")
+            typer.echo("🔧 FIX: Run 'taskbridge sync' to create project mappings")
+            typer.echo("")
+            
+            # Ask if they want to continue
+            if not typer.confirm("Continue anyway?", default=False):
+                typer.echo("Timer start cancelled.")
+                return
     else:
-        typer.echo("📝 Issue has no project assignment")
+        typer.echo("")
+        typer.echo("🟡🟡🟡 WARNING: ISSUE HAS NO PROJECT! 🟡🟡🟡")
+        typer.echo("⚠️  This Linear issue is not assigned to any project")
+        typer.echo("⚠️  Timer will be created without project categorization")
+        typer.echo("⚠️  Consider assigning the issue to a Linear project first")
+        typer.echo("")
+        
+        # Ask if they want to continue
+        if not typer.confirm("Continue anyway?", default=True):
+            typer.echo("Timer start cancelled.")
+            return
 
     # Handle Obsidian note creation and opening if requested and configured
     if create_note and config_manager.get_obsidian_vault_path() and project_name:
