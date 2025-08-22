@@ -904,154 +904,16 @@ def taskwarrior_complete(task_uuid: str):
         raise typer.Exit(1)
 
 
-@app.command("tw-sync")
-def taskwarrior_sync(
-    dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Show what would be done without making changes"),
-    from_linear: bool = typer.Option(False, "--from-linear", help="Sync from Linear to Taskwarrior"),
-    to_linear: bool = typer.Option(False, "--to-linear", help="Sync from Taskwarrior to Linear")
-):
-    """Sync tasks between Taskwarrior and other systems."""
-    try:
-        if not from_linear and not to_linear:
-            typer.echo("Please specify sync direction with --from-linear or --to-linear")
-            raise typer.Exit(1)
-        
-        tw_provider = TaskwarriorProvider()
-        
-        if from_linear:
-            if not linear_api:
-                typer.echo("❌ Linear API not configured. Run 'taskbridge config' first.")
-                raise typer.Exit(1)
-                
-            typer.echo("🔄 Syncing from Linear to Taskwarrior...")
-            
-            # Get Linear issues
-            typer.echo("📥 Fetching Linear issues...")
-            linear_issues = linear_api.get_issues(limit=100)
-            typer.echo(f"Found {len(linear_issues)} Linear issues")
-            
-            if dry_run:
-                typer.echo("[DRY RUN] Would create the following Taskwarrior tasks:")
-                for issue in linear_issues:
-                    project_name = "linear"  # Default project
-                    if issue.project_id:
-                        # Try to get project name
-                        projects = {p.id: p.name for p in linear_api.get_projects()}
-                        project_name = projects.get(issue.project_id, "linear")
-                    
-                    priority_map = {0: "", 1: "L", 2: "M", 3: "H", 4: "H"}
-                    priority = priority_map.get(issue.priority, "")
-                    
-                    typer.echo(f"  - {issue.title}")
-                    typer.echo(f"    Project: {project_name}")
-                    typer.echo(f"    Priority: {priority}")
-                    typer.echo(f"    Labels: {issue.labels}")
-                    typer.echo()
-            else:
-                # Actually sync the issues
-                created_count = 0
-                skipped_count = 0
-                
-                # Get existing Taskwarrior tasks to avoid duplicates
-                existing_tasks = tw_provider.get_issues(limit=0, include_done=True)
-                existing_titles = {task.title for task in existing_tasks}
-                
-                # Check for existing Linear IDs in annotations
-                existing_linear_ids = set()
-                for task in existing_tasks:
-                    if task.custom_fields and "annotations" in task.custom_fields:
-                        annotations = task.custom_fields["annotations"]
-                        for annotation in annotations:
-                            if isinstance(annotation, dict) and "description" in annotation:
-                                desc = annotation["description"]
-                                if desc.startswith("Linear ID: "):
-                                    existing_linear_ids.add(desc[11:])  # Remove 'Linear ID: ' prefix
-                
-                for issue in linear_issues:
-                    # Skip if task already exists
-                    if issue.id in existing_linear_ids or issue.title in existing_titles:
-                        skipped_count += 1
-                        continue
-                    
-                    # Convert Linear issue to universal format
-                    project_name = "linear"  # Default project
-                    if issue.project_id:
-                        projects = {p.id: p.name for p in linear_api.get_projects()}
-                        project_name = projects.get(issue.project_id, "linear")
-                    
-                    priority_map = {0: "", 1: "L", 2: "M", 3: "H", 4: "H"}
-                    priority = priority_map.get(issue.priority, "")
-                    
-                    # Add Linear-specific tags
-                    tags = list(issue.labels) if issue.labels else []
-                    tags.append("_linear")
-                    
-                    # Map special Linear labels to system tags
-                    if issue.labels:
-                        for label in issue.labels:
-                            if label.lower() == "blocked":
-                                tags.append("_blocked")
-                    
-                    from .taskwarrior_provider import UniversalIssue
-                    universal_issue = UniversalIssue(
-                        id="",
-                        title=issue.title,
-                        description=issue.description,
-                        state="pending",
-                        priority=priority,
-                        assignee_id=None,
-                        project_id=project_name,
-                        labels=tags,
-                        estimate=str(issue.estimate) if issue.estimate else None,
-                        url=issue.url,
-                        created_at=issue.created_at,
-                        updated_at=issue.updated_at,
-                        custom_fields={
-                            "linear_id": issue.id,
-                            "annotations": [{
-                                "description": f"Linear ID: {issue.id}",
-                                "entry": issue.created_at
-                            }]
-                        }
-                    )
-                    
-                    # Create in Taskwarrior
-                    task_uuid = tw_provider.create_issue(universal_issue)
-                    if task_uuid:
-                        created_count += 1
-                        typer.echo(f"✅ Created: {issue.title}")
-                    else:
-                        typer.echo(f"❌ Failed to create: {issue.title}")
-                
-                typer.echo(f"\n📊 Sync Results:")
-                typer.echo(f"   Created: {created_count}")
-                typer.echo(f"   Skipped (already exists): {skipped_count}")
-                typer.echo(f"   Total Linear issues: {len(linear_issues)}")
-        
-        if to_linear:
-            if not linear_api:
-                typer.echo("❌ Linear API not configured. Run 'taskbridge config' first.")
-                raise typer.Exit(1)
-                
-            typer.echo("🔄 Syncing from Taskwarrior to Linear...")
-            if dry_run:
-                typer.echo("[DRY RUN] Would sync Taskwarrior tasks to Linear")
-            else:
-                # Implementation would go here
-                typer.echo("⚠️  Taskwarrior to Linear sync not yet implemented")
-                
-    except Exception as e:
-        typer.echo(f"❌ Error during sync: {e}")
-        raise typer.Exit(1)
 
 
 @app.command("sync-linear-to-tw")
 def sync_linear_to_taskwarrior(
     dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Show what would be done without making changes"),
     project_filter: Optional[str] = typer.Option(None, "--project", "-p", help="Only sync issues from specific Linear project"),
-    limit: int = typer.Option(50, "--limit", "-l", help="Maximum number of issues to sync")
+    limit: int = typer.Option(50, "--limit", "-l", help="Maximum number of issues to sync"),
+    sync_completed: bool = typer.Option(True, "--sync-completed", help="Mark completed Linear tasks as done in Taskwarrior")
 ):
-    """One-way sync: Linear issues → Taskwarrior tasks."""
+    """One-way sync: Linear issues → Taskwarrior tasks. Includes completion status sync."""
     if not linear_api:
         typer.echo("❌ Linear API not configured. Run 'taskbridge config' first.")
         raise typer.Exit(1)
@@ -1062,11 +924,11 @@ def sync_linear_to_taskwarrior(
         typer.echo("🔄 Syncing Linear issues to Taskwarrior...")
         typer.echo("📥 Fetching Linear issues...")
         
-        # Get Linear issues with optional project filter
+        # Get Linear issues with optional project filter (include completed for sync)
         linear_issues = linear_api.get_issues(
             project_id=project_filter,
             limit=limit,
-            include_done=False  # Only sync active issues
+            include_done=True  # Include completed issues for status sync
         )
         
         typer.echo(f"Found {len(linear_issues)} Linear issues")
@@ -1079,10 +941,65 @@ def sync_linear_to_taskwarrior(
         projects = {p.id: p.name for p in linear_api.get_projects()}
         
         if dry_run:
-            typer.echo("[DRY RUN] Would create the following Taskwarrior tasks:")
+            typer.echo("[DRY RUN] Would perform the following actions:")
             typer.echo("-" * 60)
             
+            # Get existing tasks for dry-run analysis
+            existing_tasks = tw_provider.get_issues(limit=0, include_done=True)
+            existing_linear_ids = set()
+            existing_titles = set()
+            
+            for task in existing_tasks:
+                existing_titles.add(task.title)
+                if task.custom_fields and "annotations" in task.custom_fields:
+                    annotations = task.custom_fields["annotations"]
+                    for annotation in annotations:
+                        if isinstance(annotation, dict) and "description" in annotation:
+                            desc = annotation["description"]
+                            if desc.startswith("Linear ID: "):
+                                existing_linear_ids.add(desc[11:])
+            
+            create_count = 0
+            complete_count = 0
+            skip_count = 0
+            
             for issue in linear_issues:
+                # Determine action for this issue
+                action = "SKIP"
+                if issue.id in existing_linear_ids:
+                    if sync_completed and issue.state_type in ['completed', 'canceled']:
+                        # Check if task needs completion
+                        existing_task = None
+                        for task in existing_tasks:
+                            if task.custom_fields and "annotations" in task.custom_fields:
+                                annotations = task.custom_fields["annotations"]
+                                for annotation in annotations:
+                                    if isinstance(annotation, dict) and "description" in annotation:
+                                        desc = annotation["description"]
+                                        if desc == f"Linear ID: {issue.id}":
+                                            existing_task = task
+                                            break
+                                if existing_task:
+                                    break
+                        
+                        if existing_task and existing_task.state == "pending":
+                            action = "COMPLETE"
+                            complete_count += 1
+                        else:
+                            skip_count += 1
+                    else:
+                        skip_count += 1
+                elif issue.title in existing_titles:
+                    action = "SKIP (title exists)"
+                    skip_count += 1
+                elif issue.state_type in ['completed', 'canceled']:
+                    action = "SKIP (completed in Linear)"
+                    skip_count += 1
+                else:
+                    action = "CREATE"
+                    create_count += 1
+                
+                # Display issue with action
                 project_name = projects.get(issue.project_id, "linear") if issue.project_id else "linear"
                 
                 # Parse client information for dry run display
@@ -1102,52 +1019,35 @@ def sync_linear_to_taskwarrior(
                 priority_map = {0: "", 1: "L", 2: "M", 3: "H", 4: "H"}
                 priority = priority_map.get(issue.priority, "")
                 
-                typer.echo(f"📝 {issue.title}")
+                # Show action icon
+                action_icon = {
+                    "CREATE": "✅",
+                    "COMPLETE": "✅",
+                    "SKIP": "⏭️",
+                    "SKIP (title exists)": "⏭️",
+                    "SKIP (completed in Linear)": "⏭️"
+                }.get(action, "❓")
+                
+                typer.echo(f"{action_icon} [{action}] {issue.title}")
                 typer.echo(f"   Project: {project_name}")
+                typer.echo(f"   Linear State: {issue.state_type}")
                 if client_name:
                     typer.echo(f"   Client: {client_name}")
                 if priority:
                     typer.echo(f"   Priority: {priority}")
                 if issue.labels:
                     typer.echo(f"   Labels: {', '.join(issue.labels)}")
-                    # Show if blocked
-                    if any(label.lower() == "blocked" for label in issue.labels):
-                        typer.echo(f"   Status: 🚫 BLOCKED")
-                if issue.estimate:
-                    typer.echo(f"   Estimate: {issue.estimate}")
-                typer.echo(f"   Linear URL: {issue.url}")
-                
-                # Show actual Obsidian URLs found in description and comments
-                import re
-                found_obsidian_urls = []
-                
-                # Check description
-                if issue.description:
-                    obsidian_urls = re.findall(r'obsidian://[^\s\)\]]+', issue.description)
-                    found_obsidian_urls.extend(obsidian_urls)
-                
-                # Check comments
-                try:
-                    comments = linear_api.get_issue_comments(issue.id)
-                    for comment in comments:
-                        if comment.get('body'):
-                            obsidian_urls = re.findall(r'obsidian://[^\s\)\]]+', comment['body'])
-                            found_obsidian_urls.extend(obsidian_urls)
-                except Exception:
-                    # Ignore comment fetching errors in dry-run
-                    pass
-                
-                # Show found URLs
-                for url in found_obsidian_urls:
-                    typer.echo(f"   Found Obsidian: {url}")
-                
                 typer.echo()
             
-            typer.echo(f"Total tasks that would be created: {len(linear_issues)}")
+            typer.echo(f"Summary:")
+            typer.echo(f"   Would create: {create_count}")
+            typer.echo(f"   Would complete: {complete_count}")
+            typer.echo(f"   Would skip: {skip_count}")
+            typer.echo(f"   Total: {len(linear_issues)}")
             return
         
         # Ask for confirmation
-        if not typer.confirm(f"Create {len(linear_issues)} Taskwarrior tasks from Linear issues?"):
+        if not typer.confirm(f"Sync {len(linear_issues)} Linear issues with Taskwarrior?"):
             typer.echo("Sync cancelled.")
             return
         
@@ -1174,14 +1074,47 @@ def sync_linear_to_taskwarrior(
         created_count = 0
         skipped_count = 0
         failed_count = 0
+        completed_count = 0
         
-        typer.echo("📝 Creating Taskwarrior tasks...")
+        typer.echo("📝 Syncing Taskwarrior tasks...")
         
         for issue in linear_issues:
-            # Skip if already synced
-            if issue.id in existing_linear_ids or issue.title in existing_titles:
+            # Check if task already exists
+            if issue.id in existing_linear_ids:
+                # Task exists - check if completion status needs to be synced
+                if sync_completed and issue.state_type in ['completed', 'canceled']:
+                    # Find the existing task by Linear ID
+                    existing_task = None
+                    for task in existing_tasks:
+                        if task.custom_fields and "annotations" in task.custom_fields:
+                            annotations = task.custom_fields["annotations"]
+                            for annotation in annotations:
+                                if isinstance(annotation, dict) and "description" in annotation:
+                                    desc = annotation["description"]
+                                    if desc == f"Linear ID: {issue.id}":
+                                        existing_task = task
+                                        break
+                            if existing_task:
+                                break
+                    
+                    if existing_task and existing_task.state == "pending":
+                        # Mark as completed in Taskwarrior
+                        if tw_provider.complete_issue(existing_task.id):
+                            completed_count += 1
+                            typer.echo(f"✅ Completed: {issue.title}")
+                        else:
+                            typer.echo(f"❌ Failed to complete: {issue.title}")
+                    else:
+                        skipped_count += 1
+                        typer.echo(f"⏭️  Skipped (already completed): {issue.title}")
+                else:
+                    skipped_count += 1
+                    typer.echo(f"⏭️  Skipped (exists): {issue.title}")
+                continue
+            
+            elif issue.title in existing_titles:
                 skipped_count += 1
-                typer.echo(f"⏭️  Skipped (exists): {issue.title}")
+                typer.echo(f"⏭️  Skipped (title exists): {issue.title}")
                 continue
             
             # Convert Linear issue to Taskwarrior task
@@ -1254,6 +1187,12 @@ def sync_linear_to_taskwarrior(
                 typer.echo(f"   ⚠️ Could not fetch comments: {e}")
                 pass
             
+            # Skip creating completed Linear issues unless they need to be tracked
+            if issue.state_type in ['completed', 'canceled']:
+                skipped_count += 1
+                typer.echo(f"⏭️  Skipped (completed in Linear): {issue.title}")
+                continue
+            
             from .taskwarrior_provider import UniversalIssue
             universal_issue = UniversalIssue(
                 id="",
@@ -1288,13 +1227,17 @@ def sync_linear_to_taskwarrior(
         typer.echo("\n" + "=" * 50)
         typer.echo("📊 Sync Summary:")
         typer.echo(f"   ✅ Created: {created_count}")
+        typer.echo(f"   ✅ Completed: {completed_count}")
         typer.echo(f"   ⏭️  Skipped: {skipped_count}")
         typer.echo(f"   ❌ Failed: {failed_count}")
         typer.echo(f"   📋 Total: {len(linear_issues)}")
         
-        if created_count > 0:
-            typer.echo(f"\n🎉 Successfully synced {created_count} Linear issues to Taskwarrior!")
-            typer.echo("💡 Tip: Use 'taskbridge tw-tasks --query linear' to see synced tasks")
+        if created_count > 0 or completed_count > 0:
+            typer.echo(f"\n🎉 Successfully synced {created_count + completed_count} Linear issues to Taskwarrior!")
+            if created_count > 0:
+                typer.echo("💡 Tip: Use 'taskbridge tw-tasks --query linear' to see synced tasks")
+            if completed_count > 0:
+                typer.echo("💡 Tip: Completed Linear tasks are now marked as done in Taskwarrior")
         
     except Exception as e:
         typer.echo(f"❌ Error during sync: {e}")

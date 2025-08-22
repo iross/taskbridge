@@ -37,6 +37,7 @@ class LinearIssue:
     description: Optional[str]
     project_id: Optional[str]
     state_id: str
+    state_type: str = ""  # State type: started, unstarted, completed, canceled
     assignee_id: Optional[str] = None
     priority: int = 0
     estimate: Optional[float] = None
@@ -335,6 +336,7 @@ class LinearAPI:
                 description=issue_data.get('description'),
                 project_id=issue_data.get('project', {}).get('id') if issue_data.get('project') else None,
                 state_id=issue_data.get('state', {}).get('id', ''),
+                state_type=issue_data.get('state', {}).get('type', ''),
                 assignee_id=issue_data.get('assignee', {}).get('id') if issue_data.get('assignee') else None,
                 priority=issue_data.get('priority', 0),
                 estimate=issue_data.get('estimate'),
