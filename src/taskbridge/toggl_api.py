@@ -303,6 +303,39 @@ class TogglAPI:
         except Exception:
             # No current timer running
             return None
+    
+    def get_time_entries(self, start_date: str, end_date: str, project_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        """
+        Get time entries for a date range, optionally filtered by project.
+        
+        Args:
+            start_date: Start date in YYYY-MM-DD format
+            end_date: End date in YYYY-MM-DD format
+            project_id: Optional project ID to filter by
+            
+        Returns:
+            List of time entry dictionaries
+        """
+        if not self.workspace_id:
+            return []
+        
+        params = {
+            'start_date': start_date,
+            'end_date': end_date
+        }
+        
+        try:
+            data = self._make_request('GET', f'/me/time_entries', params=params)
+            
+            # Filter by project if specified
+            if project_id is not None:
+                data = [entry for entry in data if entry.get('pid') == project_id]
+            
+            return data
+            
+        except Exception as e:
+            self.logger.error(f"Error fetching time entries: {e}")
+            return []
 
 
 # Global API instance (will be None if token not configured)
