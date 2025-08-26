@@ -19,8 +19,12 @@ import json
 import sys
 import os
 import logging
+import subprocess
+import urllib.parse
+import re
 from typing import Dict, Any, Optional, List
 from datetime import datetime
+from pathlib import Path
 
 # Set up logging first
 log_dir = os.path.expanduser('~/.task/hooks')
@@ -81,7 +85,7 @@ class TogglTaskwarriorHook:
 
     def extract_client_from_tags(self, tags: List[str]) -> Optional[str]:
         """
-        Extract client name from tags in format 'client:xyz'.
+        Extract client name from tags in format 'client:xyz' or 'client.xyz'.
 
         Args:
             tags: List of task tags
@@ -93,8 +97,8 @@ class TogglTaskwarriorHook:
             return None
 
         for tag in tags:
-            if tag.startswith('client:'):
-                client_name = tag[7:]  # Remove 'client:' prefix
+            if tag.startswith('client:') or tag.startswith('client.'):
+                client_name = tag[7:]  # Remove 'client:' or 'client.' prefix
                 if client_name:
                     return client_name
 
@@ -241,6 +245,101 @@ class TogglTaskwarriorHook:
             logger.error(f"Error calculating project total time: {e}")
             return 0
 
+    def get_obsidian_config(self):
+        """Get Obsidian configuration from taskbridge config"""
+        config_dir = Path.home() / ".taskbridge"
+        
+        # Try YAML config first, then JSON
+        yaml_config = config_dir / "config.yaml"
+        json_config = config_dir / "config.json"
+        
+        config = None
+        
+        if yaml_config.exists():
+            try:
+                with open(yaml_config) as f:
+                    content = f.read()
+                    config = self.parse_simple_yaml(content)
+            except IOError as e:
+                logger.warning(f"Error reading YAML config: {e}")
+                return None, None
+        elif json_config.exists():
+            try:
+                with open(json_config) as f:
+                    config = json.load(f)
+            except (json.JSONDecodeError, IOError) as e:
+                logger.warning(f"Error reading JSON config: {e}")
+                return None, None
+        else:
+            return None, None
+        
+        vault_path = config.get('obsidian_vault_path')
+        vault_name = config.get('obsidian_vault_name', 'obsidian')
+        
+        return vault_path, vault_name
+
+    def parse_simple_yaml(self, content: str) -> dict:
+        """Simple YAML parser for key: value pairs"""
+        config = {}
+        for line in content.strip().split('\n'):
+            line = line.strip()
+            if line and ':' in line and not line.startswith('#'):
+                key, value = line.split(':', 1)
+                key = key.strip()
+                value = value.strip()
+                # Remove quotes if present
+                if value.startswith(('"', "'")) and value.endswith(('"', "'")):
+                    value = value[1:-1]
+                config[key] = value
+        return config
+
+    def get_existing_obsidian_link(self, task_uuid: str) -> str:
+        """Get existing Obsidian link from task annotations"""
+        try:
+            result = subprocess.run(
+                ['task', task_uuid, 'export'],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            
+            task_data = json.loads(result.stdout)[0]
+            annotations = task_data.get('annotations', [])
+            
+            # Look for obsidian:// links in annotations
+            for annotation in annotations:
+                description = annotation.get('description', '')
+                if 'obsidian://' in description:
+                    # Extract the URL from the annotation
+                    match = re.search(r'obsidian://[^\s]+', description)
+                    if match:
+                        return match.group(0)
+            
+            return ""
+                
+        except (subprocess.CalledProcessError, json.JSONDecodeError) as e:
+            logger.warning(f"Error getting task annotations: {e}")
+            return ""
+
+    def open_obsidian_note(self, task: Dict[str, Any]) -> None:
+        """Open Obsidian note if it exists in task annotations"""
+        task_uuid = task.get('uuid', '')
+        if not task_uuid:
+            return
+
+        # Check for existing Obsidian link
+        existing_link = self.get_existing_obsidian_link(task_uuid)
+        
+        if existing_link:
+            logger.info(f"Opening Obsidian note for task: {task.get('description', '')}")
+            try:
+                if sys.platform == 'darwin':  # macOS
+                    subprocess.run(['open', existing_link], check=False)
+                elif sys.platform.startswith('linux'):  # Linux
+                    subprocess.run(['xdg-open', existing_link], check=False)
+            except Exception as e:
+                logger.warning(f"Failed to open Obsidian note: {e}")
+
     def process_task_start(self, task: Dict[str, Any]) -> None:
         """
         Handle task start event by starting Toggl timer.
@@ -376,6 +475,8 @@ class TogglTaskwarriorHook:
             # Detect task start
             if 'start' in new_task and 'start' not in old_task:
                 self.process_task_start(new_task)
+                # Open Obsidian note if it exists
+                self.open_obsidian_note(new_task)
 
             # Detect task stop/completion
             elif ('start' not in new_task or 'end' in new_task) and 'start' in old_task:
