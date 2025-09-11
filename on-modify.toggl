@@ -248,13 +248,13 @@ class TogglTaskwarriorHook:
     def get_obsidian_config(self):
         """Get Obsidian configuration from taskbridge config"""
         config_dir = Path.home() / ".taskbridge"
-        
+
         # Try YAML config first, then JSON
         yaml_config = config_dir / "config.yaml"
         json_config = config_dir / "config.json"
-        
+
         config = None
-        
+
         if yaml_config.exists():
             try:
                 with open(yaml_config) as f:
@@ -272,10 +272,10 @@ class TogglTaskwarriorHook:
                 return None, None
         else:
             return None, None
-        
+
         vault_path = config.get('obsidian_vault_path')
         vault_name = config.get('obsidian_vault_name', 'obsidian')
-        
+
         return vault_path, vault_name
 
     def parse_simple_yaml(self, content: str) -> dict:
@@ -302,10 +302,10 @@ class TogglTaskwarriorHook:
                 text=True,
                 check=True
             )
-            
+
             task_data = json.loads(result.stdout)[0]
             annotations = task_data.get('annotations', [])
-            
+
             # Look for obsidian:// links in annotations
             for annotation in annotations:
                 description = annotation.get('description', '')
@@ -314,9 +314,9 @@ class TogglTaskwarriorHook:
                     match = re.search(r'obsidian://[^\s]+', description)
                     if match:
                         return match.group(0)
-            
+
             return ""
-                
+
         except (subprocess.CalledProcessError, json.JSONDecodeError) as e:
             logger.warning(f"Error getting task annotations: {e}")
             return ""
@@ -329,7 +329,7 @@ class TogglTaskwarriorHook:
 
         # Check for existing Obsidian link
         existing_link = self.get_existing_obsidian_link(task_uuid)
-        
+
         if existing_link:
             logger.info(f"Opening Obsidian note for task: {task.get('description', '')}")
             try:
@@ -460,6 +460,16 @@ class TogglTaskwarriorHook:
             logger.error(f"Failed to stop Toggl timer: {e}")
             print(f"⚠️  Failed to stop Toggl timer: {e}", file=sys.stderr)
 
+        # Complete Raycast Focus mode session if one is active
+        try:
+            subprocess.run(['open', 'raycast://focus/complete'], check=False)
+            logger.info("Attempted to complete Raycast Focus mode session")
+            print("🎯 Completed Raycast Focus mode session (if one was active)")
+
+        except Exception as e:
+            logger.warning(f"Failed to complete Raycast Focus mode: {e}")
+            print(f"⚠️  Failed to complete Raycast Focus mode: {e}", file=sys.stderr)
+
     def process_hook(self, old_task: Dict[str, Any], new_task: Dict[str, Any]) -> Dict[str, Any]:
         """
         Process the hook event and return the modified task.
@@ -475,8 +485,6 @@ class TogglTaskwarriorHook:
             # Detect task start
             if 'start' in new_task and 'start' not in old_task:
                 self.process_task_start(new_task)
-                # Open Obsidian note if it exists
-                self.open_obsidian_note(new_task)
 
             # Detect task stop/completion
             elif ('start' not in new_task or 'end' in new_task) and 'start' in old_task:
