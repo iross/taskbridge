@@ -1,0 +1,32 @@
+repos:
+  # Ruff for linting and formatting
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.7.4
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  # Local hooks using uv
+  - repo: local
+    hooks:
+      # Run unit tests on commit
+      - id: pytest
+        name: pytest
+        entry: uv run pytest
+        args: [tests/unit, -v, --tb=short]
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [commit]
+
+      # Type checking
+      - id: ty
+        name: ty
+        entry: uv run ty
+        args: [check, src/]
+        language: system
+        types: [python]
+        pass_filenames: false
+        always_run: true
+        stages: [commit]

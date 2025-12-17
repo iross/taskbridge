@@ -1,15 +1,12 @@
-#!/usr/bin/env python3
-
-"""
-tw-raycast-focus.py
-Starts Raycast Focus mode for the active taskwarrior task using the task description as the goal
-"""
+"""tw-raycast-focus.py
+Starts Raycast Focus mode for the active taskwarrior task using the task description as the goal"""
 
 import json
 import subprocess
 import sys
 import urllib.parse
 from pathlib import Path
+
 
 def print_status(color_code: str, message: str):
     """Print colored status message"""
@@ -22,6 +19,7 @@ def print_status(color_code: str, message: str):
     }
     print(f"{colors.get(color_code, '')}{message}{colors['nc']}")
 
+
 def get_active_task():
     """Get active task from taskwarrior"""
     try:
@@ -31,12 +29,10 @@ def get_active_task():
             text=True,
             check=True
         )
-
         tasks = json.loads(result.stdout)
         if not tasks:
             print_status('red', "❌ No active task found. Start a task first with 'task <id> start'")
             sys.exit(1)
-
         return tasks[0]
     except subprocess.CalledProcessError as e:
         print_status('red', f"❌ Error getting active task: {e}")
@@ -45,14 +41,57 @@ def get_active_task():
         print_status('red', f"❌ Error parsing task data: {e}")
         sys.exit(1)
 
+
 def start_raycast_focus(task_description: str):
     """Start Raycast Focus mode with task description as goal"""
     try:
         # URL-encode the goal parameter
         encoded_goal = urllib.parse.quote(task_description)
-        focus_url = f"raycast://focus/start?goal={encoded_goal}"
+
+        # Default apps to block during focus mode
+        blocked_apps = [
+            'Slack',
+            'Discord',
+            'Messages',
+            'Mail',
+            'Twitter',
+            'X',
+            'Tweetbot',
+            'Telegram',
+            'WhatsApp'
+        ]
+
+        # Default websites to block during focus mode
+        blocked_websites = [
+            'twitter.com',
+            'x.com',
+            'reddit.com',
+            'facebook.com',
+            'instagram.com',
+            'youtube.com',
+            'linkedin.com',
+            'tiktok.com',
+            'news.ycombinator.com'
+        ]
+
+        # Build URL parameters
+        params = [f"goal={encoded_goal}"]
+
+        # Add blocked apps
+        for app in blocked_apps:
+            params.append(f"blockedApps={urllib.parse.quote(app)}")
+
+        # Add blocked websites
+        for website in blocked_websites:
+            params.append(f"blockedWebsites={urllib.parse.quote(website)}")
+
+        # Enable notification blocking
+        params.append("blockNotifications=true")
+
+        focus_url = f"raycast://focus/start?{'&'.join(params)}"
 
         print_status('blue', f"🎯 Starting Raycast Focus mode with goal: {task_description}")
+        print_status('blue', f"🚫 Blocking {len(blocked_apps)} apps and {len(blocked_websites)} websites")
 
         if sys.platform == 'darwin':  # macOS
             subprocess.run(['open', focus_url], check=True)
@@ -60,13 +99,13 @@ def start_raycast_focus(task_description: str):
         else:
             print_status('yellow', f"⚠️  Raycast Focus is only available on macOS")
             print_status('blue', f"Focus URL: {focus_url}")
-
     except subprocess.CalledProcessError as e:
         print_status('red', f"❌ Error starting Raycast Focus mode: {e}")
         sys.exit(1)
     except Exception as e:
         print_status('red', f"❌ Unexpected error: {e}")
         sys.exit(1)
+
 
 def get_focus_status():
     """Check if there's already an active focus session"""
@@ -75,13 +114,13 @@ def get_focus_status():
     # For now, we'll just inform the user
     print_status('blue', "ℹ️  Note: This will start a new focus session (or do nothing if one is already active)")
 
+
 def main():
     """Main function"""
     print_status('blue', "🔍 Looking for active taskwarrior task...")
 
     # Get active task
     task = get_active_task()
-
     task_uuid = task['uuid']
     task_description = task['description']
     project_name = task.get('project', 'Default')
@@ -98,6 +137,7 @@ def main():
 
     print_status('green', "🎉 Done! Raycast Focus mode started for your active task.")
     print_status('yellow', "💡 Tip: Use 'raycast://focus/complete' URL or the Raycast UI to end the focus session")
+
 
 if __name__ == "__main__":
     main()

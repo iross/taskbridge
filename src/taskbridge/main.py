@@ -12,6 +12,7 @@ from .linear_api import linear_api
 from .sync import sync_engine
 from .toggl_api import toggl_api
 from .taskwarrior_provider import TaskwarriorProvider
+from .google_calendar_provider import GoogleCalendarProvider
 
 app = typer.Typer(
     name="taskbridge",
@@ -906,6 +907,200 @@ def taskwarrior_complete(task_uuid: str):
 
 
 
+@app.command("config-gcal")
+def config_google_calendar():
+    """Configure Google Calendar integration settings."""
+    typer.echo("Google Calendar Configuration")
+    typer.echo("=" * 30)
+    
+    # Check if credentials file exists
+    credentials_file = "credentials.json"
+    if not Path(credentials_file).exists():
+        typer.echo("❌ Google Calendar credentials not found.")
+        typer.echo("📝 To set up Google Calendar integration:")
+        typer.echo("   1. Go to https://console.cloud.google.com/")
+        typer.echo("   2. Create or select a project")
+        typer.echo("   3. Enable the Google Calendar API")
+        typer.echo("   4. Create OAuth 2.0 credentials")
+        typer.echo("   5. Download the JSON file as 'credentials.json'")
+        typer.echo("   6. Place it in the current directory")
+        typer.echo()
+        
+        if typer.confirm("Do you have the credentials file ready?"):
+            file_path = typer.prompt("Enter path to credentials JSON file")
+            try:
+                import shutil
+                shutil.copy(file_path, credentials_file)
+                typer.echo(f"✅ Copied credentials to {credentials_file}")
+            except Exception as e:
+                typer.echo(f"❌ Error copying file: {e}")
+                raise typer.Exit(1)
+        else:
+            typer.echo("Configuration cancelled. Set up credentials first.")
+            return
+    
+    # Test authentication
+    try:
+        provider = GoogleCalendarProvider()
+        if provider.authenticate({}):
+            typer.echo("✅ Google Calendar authentication successful")
+            
+            # Show available calendars
+            calendars = provider.get_projects()
+            if calendars:
+                typer.echo(f"\nFound {len(calendars)} calendar(s):")
+                for calendar in calendars[:5]:  # Show first 5
+                    typer.echo(f"  📅 {calendar.name}")
+                if len(calendars) > 5:
+                    typer.echo(f"  ... and {len(calendars) - 5} more")
+            
+            typer.echo("🎉 Google Calendar integration is ready!")
+        else:
+            typer.echo("❌ Google Calendar authentication failed")
+            
+    except Exception as e:
+        typer.echo(f"❌ Error setting up Google Calendar: {e}")
+        raise typer.Exit(1)
+
+
+@app.command("sync-gcal-to-tw")
+def sync_google_calendar_to_taskwarrior(
+    dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Show what would be done without making changes"),
+    calendar_id: Optional[str] = typer.Option(None, "--calendar", "-c", help="Specific calendar ID to sync (default: primary)"),
+    days_ahead: int = typer.Option(7, "--days", "-d", help="Number of days ahead to sync (default: 7)"),
+    include_past: bool = typer.Option(False, "--include-past", help="Include past events from last 7 days")
+):
+    """Sync Google Calendar meetings to Taskwarrior tasks with _meeting label."""
+    try:
+        # Initialize providers
+        gcal_provider = GoogleCalendarProvider()
+        tw_provider = TaskwarriorProvider()
+        
+        typer.echo("🔄 Syncing Google Calendar meetings to Taskwarrior...")
+        
+        # Authenticate with Google Calendar
+        if not gcal_provider.authenticate({}):
+            typer.echo("❌ Google Calendar authentication failed. Run 'taskbridge config-gcal' first.")
+            raise typer.Exit(1)
+        
+        typer.echo("📅 Fetching calendar events...")
+        
+        # Get calendar events (meetings)
+        calendar_events = gcal_provider.get_issues(
+            project_id=calendar_id or 'primary',
+            limit=50,
+            include_done=include_past
+        )
+        
+        typer.echo(f"Found {len(calendar_events)} calendar events")
+        
+        if not calendar_events:
+            typer.echo("No calendar events found to sync.")
+            return
+        
+        if dry_run:
+            typer.echo("[DRY RUN] Would perform the following actions:")
+            typer.echo("-" * 60)
+            
+            # Get existing tasks to check for duplicates
+            existing_tasks = tw_provider.get_issues(limit=0, include_done=True)
+            existing_titles = {task.title for task in existing_tasks}
+            
+            create_count = 0
+            skip_count = 0
+            
+            for event in calendar_events:
+                if event.title in existing_titles:
+                    typer.echo(f"⏭️  SKIP: {event.title}")
+                    typer.echo(f"   Time: {event.custom_fields.get('start_time', {}).get('dateTime', 'N/A')}")
+                    typer.echo(f"   Reason: Task already exists")
+                    skip_count += 1
+                else:
+                    typer.echo(f"✅ CREATE: {event.title}")
+                    typer.echo(f"   Time: {event.custom_fields.get('start_time', {}).get('dateTime', 'N/A')}")
+                    if event.custom_fields.get('attendees'):
+                        typer.echo(f"   Attendees: {len(event.custom_fields['attendees'])}")
+                    typer.echo(f"   Duration: {event.estimate or 'Unknown'}")
+                    typer.echo(f"   Labels: {', '.join(event.labels)}")
+                    create_count += 1
+                typer.echo()
+            
+            typer.echo(f"Summary:")
+            typer.echo(f"   Would create: {create_count}")
+            typer.echo(f"   Would skip: {skip_count}")
+            typer.echo(f"   Total: {len(calendar_events)}")
+            return
+        
+        # Ask for confirmation
+        if not typer.confirm(f"Sync {len(calendar_events)} calendar events to Taskwarrior?"):
+            typer.echo("Sync cancelled.")
+            return
+        
+        # Get existing Taskwarrior tasks to avoid duplicates
+        typer.echo("🔍 Checking for existing tasks...")
+        existing_tasks = tw_provider.get_issues(limit=0, include_done=True)
+        existing_titles = {task.title for task in existing_tasks}
+        
+        # Sync the events
+        created_count = 0
+        skipped_count = 0
+        failed_count = 0
+        
+        typer.echo("📝 Creating Taskwarrior tasks for meetings...")
+        
+        for event in calendar_events:
+            # Check if task already exists
+            if event.title in existing_titles:
+                skipped_count += 1
+                typer.echo(f"⏭️  Skipped (exists): {event.title}")
+                continue
+            
+            # Create the task
+            task_uuid = tw_provider.create_issue(event)
+            if task_uuid:
+                created_count += 1
+                typer.echo(f"✅ Created meeting task: {event.title}")
+                
+                # Add meeting details as annotations
+                if event.custom_fields:
+                    start_time = event.custom_fields.get('start_time', {})
+                    if start_time.get('dateTime'):
+                        tw_provider.api.add_annotation(task_uuid, f"Meeting time: {start_time['dateTime']}")
+                    
+                    attendees = event.custom_fields.get('attendees', [])
+                    if attendees:
+                        tw_provider.api.add_annotation(task_uuid, f"Attendees: {', '.join(attendees[:3])}")
+                        if len(attendees) > 3:
+                            tw_provider.api.add_annotation(task_uuid, f"... and {len(attendees) - 3} more")
+                    
+                    location = event.custom_fields.get('location')
+                    if location:
+                        tw_provider.api.add_annotation(task_uuid, f"Location: {location}")
+                        
+                    if event.url:
+                        tw_provider.api.add_annotation(task_uuid, f"Meeting link: {event.url}")
+                        
+            else:
+                failed_count += 1
+                typer.echo(f"❌ Failed: {event.title}")
+        
+        # Summary
+        typer.echo("\n" + "=" * 50)
+        typer.echo("📊 Sync Summary:")
+        typer.echo(f"   ✅ Created: {created_count}")
+        typer.echo(f"   ⏭️  Skipped: {skipped_count}")
+        typer.echo(f"   ❌ Failed: {failed_count}")
+        typer.echo(f"   📋 Total: {len(calendar_events)}")
+        
+        if created_count > 0:
+            typer.echo(f"\n🎉 Successfully synced {created_count} calendar meetings to Taskwarrior!")
+            typer.echo("💡 Tip: Use 'taskbridge tw-tasks --query _meeting' to see synced meeting tasks")
+        
+    except Exception as e:
+        typer.echo(f"❌ Error during sync: {e}")
+        raise typer.Exit(1)
+
+
 @app.command("sync-linear-to-tw")
 def sync_linear_to_taskwarrior(
     dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Show what would be done without making changes"),
@@ -1241,6 +1436,362 @@ def sync_linear_to_taskwarrior(
         
     except Exception as e:
         typer.echo(f"❌ Error during sync: {e}")
+        raise typer.Exit(1)
+
+
+@app.command("config-todoist")
+def config_todoist():
+    """Configure Todoist integration settings."""
+    typer.echo("Todoist Configuration")
+    typer.echo("=" * 30)
+
+    # 1. Get and validate API token
+    current_token = config_manager.get_todoist_token()
+    if current_token:
+        typer.echo(f"Current token: {current_token[:8]}...")
+        if not typer.confirm("Update Todoist token?"):
+            token = current_token
+        else:
+            token = typer.prompt("Enter Todoist API token")
+    else:
+        typer.echo("Get your token from: https://todoist.com/app/settings/integrations/developer")
+        token = typer.prompt("Enter Todoist API token")
+
+    # Validate token
+    if not config_manager.validate_todoist_token(token):
+        typer.echo("❌ Invalid token")
+        raise typer.Exit(1)
+
+    config_manager.set('todoist_token', token)
+    typer.echo("✅ Token validated and saved")
+
+    # 2. Configure sync label
+    current_label = config_manager.get_todoist_sync_label()
+    typer.echo(f"\nCurrent sync label: {current_label}")
+    typer.echo("Tasks with this label will trigger Obsidian note creation")
+
+    if typer.confirm("Update sync label?"):
+        label = typer.prompt("Enter sync label", default="@obsidian")
+        config_manager.set('todoist_sync_label', label)
+
+    # 3. Configure project mappings
+    if typer.confirm("\nConfigure project → folder mappings?"):
+        from .todoist_api import TodoistAPI
+        try:
+            api = TodoistAPI(token)
+            projects = api.get_projects()
+
+            typer.echo(f"\nFound {len(projects)} Todoist projects:")
+            for i, proj in enumerate(projects, 1):
+                typer.echo(f"{i}. {proj.name} (ID: {proj.id})")
+
+            while typer.confirm("\nAdd project mapping?"):
+                project_num = typer.prompt("Select project number", type=int)
+                if 1 <= project_num <= len(projects):
+                    project = projects[project_num - 1]
+
+                    client_name = typer.prompt(f"Client name for '{project.name}'", default="")
+                    folder_name = typer.prompt(f"Obsidian folder name", default=project.name)
+
+                    config_manager.set_todoist_project_mapping(
+                        project.id,
+                        client_name,
+                        folder_name
+                    )
+                    typer.echo(f"✅ Mapped {project.name} → {folder_name}")
+                else:
+                    typer.echo("Invalid selection")
+        except Exception as e:
+            typer.echo(f"⚠️  Error fetching projects: {e}")
+
+    typer.echo("\n✅ Todoist configuration complete!")
+
+
+@app.command("create-project")
+def create_project(
+    name: Optional[str] = typer.Option(None, "--name", "-n", help="Project name"),
+    client: Optional[str] = typer.Option(None, "--client", "-c", help="Client name")
+):
+    """Create a project in both Todoist and Obsidian with automatic linking."""
+    # Check prerequisites
+    if not config_manager.get_todoist_token():
+        typer.echo("❌ Todoist not configured. Run 'taskbridge config-todoist' first.")
+        raise typer.Exit(1)
+
+    if not config_manager.get_obsidian_vault_path():
+        typer.echo("❌ Obsidian not configured. Run 'taskbridge config-obsidian' first.")
+        raise typer.Exit(1)
+
+    try:
+        from .todoist_api import TodoistAPI
+        import urllib.parse
+        import subprocess
+
+        api = TodoistAPI()
+
+        # Get project details interactively if not provided
+        if not name:
+            name = typer.prompt("Enter project name")
+
+        if not client:
+            client = typer.prompt("Enter client name (optional, press Enter to skip)", default="")
+
+        # Create in Todoist
+        typer.echo(f"\n📝 Creating project '{name}' in Todoist...")
+        todoist_project = api.create_project(name=name)
+        typer.echo(f"✅ Created Todoist project (ID: {todoist_project.id})")
+
+        # Create Obsidian folder
+        typer.echo(f"\n📁 Creating folder in Obsidian...")
+        project_dir = config_manager.create_project_directory(name)
+        typer.echo(f"✅ Created folder: {project_dir}")
+
+        # Trigger Obsidian to open the project folder (user's template will create overview)
+        vault_name = config_manager.get_obsidian_vault_name()
+        encoded_project = urllib.parse.quote(name)
+        obsidian_url = f"obsidian://open?vault={vault_name}&file=10%20Projects%2F{encoded_project}%2F"
+
+        typer.echo(f"\n📖 Opening project in Obsidian...")
+        typer.echo("💡 Use your Obsidian template to create the project overview note")
+        subprocess.run(['open', obsidian_url])
+
+        # Save mapping
+        config_manager.set_todoist_project_mapping(
+            todoist_project.id,
+            client,
+            name
+        )
+        typer.echo(f"✅ Saved project mapping")
+
+        # Display summary
+        typer.echo("\n" + "=" * 60)
+        typer.echo("🎉 Project created successfully!")
+        typer.echo(f"   📝 Name: {name}")
+        if client:
+            typer.echo(f"   👤 Client: {client}")
+        typer.echo(f"   🔗 Todoist: {todoist_project.url}")
+        typer.echo(f"   📁 Obsidian: {project_dir}")
+        typer.echo("=" * 60)
+
+    except Exception as e:
+        typer.echo(f"❌ Error creating project: {e}")
+        raise typer.Exit(1)
+
+
+@app.command("create-todoist-note")
+def create_todoist_note(
+    task_id: str,
+    open_note: bool = typer.Option(True, "--open/--no-open", help="Open note in Obsidian after creation")
+):
+    """Create Obsidian note for a specific Todoist task."""
+    if not config_manager.get_todoist_token():
+        typer.echo("❌ Todoist not configured. Run 'taskbridge config-todoist' first.")
+        raise typer.Exit(1)
+
+    if not config_manager.get_obsidian_vault_path():
+        typer.echo("❌ Obsidian not configured. Run 'taskbridge config-obsidian' first.")
+        raise typer.Exit(1)
+
+    try:
+        from .todoist_api import TodoistAPI
+        from .database import TodoistNoteMapping
+
+        api = TodoistAPI()
+
+        # Check if note already exists
+        existing = db.get_todoist_note_by_task_id(task_id)
+        if existing:
+            typer.echo(f"⚠️  Note already exists: {existing.note_path}")
+            if not typer.confirm("Recreate note?"):
+                if open_note:
+                    import subprocess
+                    subprocess.run(['open', existing.obsidian_url])
+                return
+
+        # Fetch task from Todoist
+        typer.echo(f"📥 Fetching task {task_id}...")
+        task = api.get_task(task_id)
+        if not task:
+            typer.echo(f"❌ Task {task_id} not found")
+            raise typer.Exit(1)
+
+        # Get project mapping
+        project_mapping = config_manager.get_todoist_project_mappings().get(task.project_id)
+        if not project_mapping:
+            typer.echo(f"⚠️  No mapping for project {task.project_id}")
+            # Use project name directly
+            project = api.get_project(task.project_id)
+            project_name = project.name if project else "Todoist"
+            client_name = ""
+        else:
+            project_name = project_mapping['folder']
+            client_name = project_mapping.get('client', '')
+
+        # Create Obsidian note
+        typer.echo(f"📝 Creating note in {project_name}...")
+        note_path = config_manager.create_task_note(
+            project_name=project_name,
+            task_title=task.content,
+            client=client_name,
+            status="backlog",
+            tags=task.labels
+        )
+
+        # Generate Obsidian URL
+        obsidian_url = config_manager.generate_obsidian_url(
+            project_name,
+            note_path.name
+        )
+
+        # Save mapping to database
+        mapping = TodoistNoteMapping(
+            todoist_task_id=task_id,
+            todoist_project_id=task.project_id,
+            note_path=str(note_path),
+            obsidian_url=obsidian_url
+        )
+        db.create_todoist_note_mapping(mapping)
+
+        typer.echo(f"✅ Created note: {note_path.name}")
+
+        # Add Obsidian URL as comment in Todoist
+        typer.echo("💬 Adding Obsidian URL to Todoist task...")
+        comment_text = f"📝 Obsidian note: [Open Note]({obsidian_url})"
+        if api.create_comment(task_id, comment_text):
+            typer.echo("✅ Added Obsidian URL as comment")
+        else:
+            typer.echo("⚠️  Failed to add comment (note still created)")
+
+        # Open note if requested
+        if open_note:
+            if config_manager.open_obsidian_note(project_name, note_path.name):
+                typer.echo("📖 Opened note in Obsidian")
+        else:
+            typer.echo(f"📖 Obsidian URL: {obsidian_url}")
+
+    except Exception as e:
+        typer.echo(f"❌ Error: {e}")
+        raise typer.Exit(1)
+
+
+@app.command("sync-todoist-notes")
+def sync_todoist_notes(
+    dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Preview without creating notes"),
+    label: Optional[str] = typer.Option(None, "--label", "-l", help="Override sync label from config")
+):
+    """Scan Todoist tasks with sync label and create Obsidian notes."""
+    if not config_manager.get_todoist_token():
+        typer.echo("❌ Todoist not configured. Run 'taskbridge config-todoist' first.")
+        raise typer.Exit(1)
+
+    if not config_manager.get_obsidian_vault_path():
+        typer.echo("❌ Obsidian not configured. Run 'taskbridge config-obsidian' first.")
+        raise typer.Exit(1)
+
+    try:
+        from .todoist_api import TodoistAPI
+        from .database import TodoistNoteMapping
+
+        api = TodoistAPI()
+
+        # Get sync label
+        sync_label = label or config_manager.get_todoist_sync_label()
+        typer.echo(f"🔍 Searching for tasks with label: {sync_label}")
+
+        # Fetch tasks with the label
+        tasks = api.get_tasks(label=sync_label)
+        typer.echo(f"Found {len(tasks)} task(s)")
+
+        if not tasks:
+            typer.echo("No tasks found to sync")
+            return
+
+        # Get existing mappings to avoid duplicates
+        existing_mappings = {m.todoist_task_id for m in db.get_all_todoist_mappings()}
+
+        # Filter out already synced tasks
+        new_tasks = [t for t in tasks if t.id not in existing_mappings]
+        typer.echo(f"New tasks to sync: {len(new_tasks)}")
+        typer.echo(f"Already synced: {len(tasks) - len(new_tasks)}")
+
+        if not new_tasks:
+            typer.echo("✅ All tasks already have notes")
+            return
+
+        if dry_run:
+            typer.echo("\n[DRY RUN] Would create notes for:")
+            typer.echo("-" * 60)
+            for task in new_tasks:
+                project = api.get_project(task.project_id)
+                typer.echo(f"✅ {task.content}")
+                typer.echo(f"   Project: {project.name if project else 'Unknown'}")
+                typer.echo(f"   Labels: {', '.join(task.labels)}")
+                typer.echo()
+            return
+
+        # Confirm before proceeding
+        if not typer.confirm(f"\nCreate notes for {len(new_tasks)} tasks?"):
+            typer.echo("Cancelled")
+            return
+
+        created_count = 0
+        failed_count = 0
+
+        for task in new_tasks:
+            try:
+                # Get project mapping
+                project_mapping = config_manager.get_todoist_project_mappings().get(task.project_id)
+                if not project_mapping:
+                    project = api.get_project(task.project_id)
+                    project_name = project.name if project else "Todoist"
+                    client_name = ""
+                else:
+                    project_name = project_mapping['folder']
+                    client_name = project_mapping.get('client', '')
+
+                # Create note
+                note_path = config_manager.create_task_note(
+                    project_name=project_name,
+                    task_title=task.content,
+                    client=client_name,
+                    status="backlog",
+                    tags=task.labels
+                )
+
+                # Generate URL
+                obsidian_url = config_manager.generate_obsidian_url(
+                    project_name,
+                    note_path.name
+                )
+
+                # Save mapping
+                mapping = TodoistNoteMapping(
+                    todoist_task_id=task.id,
+                    todoist_project_id=task.project_id,
+                    note_path=str(note_path),
+                    obsidian_url=obsidian_url
+                )
+                db.create_todoist_note_mapping(mapping)
+
+                # Add comment
+                comment_text = f"📝 Obsidian note: [Open Note]({obsidian_url})"
+                api.create_comment(task.id, comment_text)
+
+                created_count += 1
+                typer.echo(f"✅ {task.content}")
+
+            except Exception as e:
+                failed_count += 1
+                typer.echo(f"❌ Failed: {task.content} - {e}")
+
+        # Summary
+        typer.echo("\n" + "=" * 60)
+        typer.echo(f"✅ Created: {created_count}")
+        typer.echo(f"❌ Failed: {failed_count}")
+        typer.echo(f"📋 Total: {len(new_tasks)}")
+
+    except Exception as e:
+        typer.echo(f"❌ Error: {e}")
         raise typer.Exit(1)
 
 

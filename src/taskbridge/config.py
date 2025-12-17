@@ -59,6 +59,41 @@ class Config:
         """Get Toggl API token."""
         return self.get('toggl_token')
 
+    def get_todoist_token(self) -> Optional[str]:
+        """Get Todoist API token."""
+        return self.get('todoist_token')
+
+    def get_todoist_sync_label(self) -> str:
+        """Get Todoist sync label for automatic note creation."""
+        return self.get('todoist_sync_label', '@obsidian')
+
+    def get_todoist_project_mappings(self) -> dict[str, dict[str, str]]:
+        """Get Todoist project to Obsidian folder mappings.
+
+        Returns:
+            Dict mapping project IDs to {client: str, folder: str}
+        """
+        return self.get('todoist_project_mappings', {})
+
+    def set_todoist_project_mapping(self, project_id: str, client: str, folder: str) -> None:
+        """Set mapping for a Todoist project to Obsidian folder."""
+        mappings = self.get_todoist_project_mappings()
+        mappings[project_id] = {'client': client, 'folder': folder}
+        self.set('todoist_project_mappings', mappings)
+
+    def validate_todoist_token(self, token: str) -> bool:
+        """Validate Todoist API token."""
+        try:
+            headers = {'Authorization': f'Bearer {token}'}
+            response = requests.get(
+                'https://api.todoist.com/rest/v2/projects',
+                headers=headers,
+                timeout=10
+            )
+            return response.status_code == 200
+        except Exception:
+            return False
+
     def get_obsidian_vault_path(self) -> Optional[str]:
         """Get Obsidian vault path."""
         return self.get('obsidian_vault_path')
