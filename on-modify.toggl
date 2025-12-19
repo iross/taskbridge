@@ -17,41 +17,41 @@ Installation:
 """
 
 import json
-import sys
-import os
 import logging
-import subprocess
-import re
+import os
 import pickle
-from typing import Dict, Any, Optional, List, Tuple
+import subprocess
+import sys
 from datetime import datetime, timedelta
-from pathlib import Path
+from typing import Any
 
 # Set up logging first
-log_dir = os.path.expanduser('~/.task/hooks')
+log_dir = os.path.expanduser("~/.task/hooks")
 os.makedirs(log_dir, exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler(os.path.join(log_dir, 'toggl-hook.log')),
-        logging.StreamHandler(sys.stderr)
-    ]
+        logging.FileHandler(os.path.join(log_dir, "toggl-hook.log")),
+        logging.StreamHandler(sys.stderr),
+    ],
 )
-logger = logging.getLogger('toggl-hook')
+logger = logging.getLogger("toggl-hook")
 
 # Try importing TaskBridge (first from installed package, then from local src)
 try:
-    from taskbridge.toggl_api import TogglAPI, TogglClient, TogglProject
     from taskbridge.config import config as config_manager
+    from taskbridge.toggl_api import TogglAPI, TogglClient, TogglProject
+
     TASKBRIDGE_AVAILABLE = True
 except ImportError:
     # Try adding the local source path as fallback
-    sys.path.insert(0, os.path.expanduser('~/projects/taskbridge/src'))
+    sys.path.insert(0, os.path.expanduser("~/projects/taskbridge/src"))
     try:
-        from taskbridge.toggl_api import TogglAPI, TogglClient, TogglProject
         from taskbridge.config import config as config_manager
+        from taskbridge.toggl_api import TogglAPI, TogglClient, TogglProject
+
         TASKBRIDGE_AVAILABLE = True
     except ImportError as e:
         logger.warning(f"TaskBridge modules not available: {e}")
@@ -60,23 +60,30 @@ except ImportError:
 
         # Define stub classes for type hints when TaskBridge is not available
         class TogglClient:
-            def __init__(self, **kwargs): pass
+            def __init__(self, **kwargs):
+                pass
+
         class TogglProject:
-            def __init__(self, **kwargs): pass
+            def __init__(self, **kwargs):
+                pass
+
         class TogglAPI:
-            def __init__(self): pass
+            def __init__(self):
+                pass
 
 
 class TogglCache:
     """Cache for Toggl clients and projects to reduce API calls."""
 
-    CACHE_FILE = os.path.expanduser('~/.task/hooks/.toggl_cache.pkl')
+    CACHE_FILE = os.path.expanduser("~/.task/hooks/.toggl_cache.pkl")
     CACHE_DURATION = timedelta(hours=1)  # Cache expires after 1 hour
 
     def __init__(self):
-        self.clients: Dict[str, TogglClient] = {}  # name -> client
-        self.projects: Dict[Tuple[str, Optional[int]], TogglProject] = {}  # (name, client_id) -> project
-        self.last_updated: Optional[datetime] = None
+        self.clients: dict[str, TogglClient] = {}  # name -> client
+        self.projects: dict[
+            tuple[str, int | None], TogglProject
+        ] = {}  # (name, client_id) -> project
+        self.last_updated: datetime | None = None
         self.load_cache()
 
     def is_expired(self) -> bool:
@@ -89,17 +96,19 @@ class TogglCache:
         """Load cache from disk."""
         try:
             if os.path.exists(self.CACHE_FILE):
-                with open(self.CACHE_FILE, 'rb') as f:
+                with open(self.CACHE_FILE, "rb") as f:
                     data = pickle.load(f)
-                    self.clients = data.get('clients', {})
-                    self.projects = data.get('projects', {})
-                    self.last_updated = data.get('last_updated')
+                    self.clients = data.get("clients", {})
+                    self.projects = data.get("projects", {})
+                    self.last_updated = data.get("last_updated")
 
                     if self.is_expired():
                         logger.info("Cache expired, will refresh on next use")
                         self.clear()
                     else:
-                        logger.info(f"Loaded cache with {len(self.clients)} clients and {len(self.projects)} projects")
+                        logger.info(
+                            f"Loaded cache with {len(self.clients)} clients and {len(self.projects)} projects"
+                        )
         except Exception as e:
             logger.warning(f"Failed to load cache: {e}")
             self.clear()
@@ -108,11 +117,11 @@ class TogglCache:
         """Save cache to disk."""
         try:
             data = {
-                'clients': self.clients,
-                'projects': self.projects,
-                'last_updated': datetime.now()
+                "clients": self.clients,
+                "projects": self.projects,
+                "last_updated": datetime.now(),
             }
-            with open(self.CACHE_FILE, 'wb') as f:
+            with open(self.CACHE_FILE, "wb") as f:
                 pickle.dump(data, f)
             logger.debug("Cache saved successfully")
         except Exception as e:
@@ -124,7 +133,7 @@ class TogglCache:
         self.projects = {}
         self.last_updated = None
 
-    def get_client(self, name: str) -> Optional[TogglClient]:
+    def get_client(self, name: str) -> TogglClient | None:
         """Get client from cache by name (case-insensitive)."""
         name_lower = name.lower()
         for cached_name, client in self.clients.items():
@@ -138,7 +147,7 @@ class TogglCache:
         self.last_updated = datetime.now()
         self.save_cache()
 
-    def get_project(self, name: str, client_id: Optional[int] = None) -> Optional[TogglProject]:
+    def get_project(self, name: str, client_id: int | None = None) -> TogglProject | None:
         """Get project from cache by name and optional client_id (case-insensitive)."""
         name_lower = name.lower()
         for (cached_name, cached_client_id), project in self.projects.items():
@@ -155,11 +164,13 @@ class TogglCache:
 
 class TogglRateLimitError(Exception):
     """Exception raised when Toggl API rate limit is hit."""
+
     pass
 
 
 class TogglAPIError(Exception):
     """Exception raised when Toggl API encounters an error."""
+
     pass
 
 
@@ -181,9 +192,18 @@ class TogglTaskwarriorHook:
         except Exception as e:
             # This can happen if API is rate-limited during initialization
             error_str = str(e).lower()
-            if '402' in error_str or '429' in error_str or 'rate limit' in error_str or 'hourly limit' in error_str:
-                logger.warning(f"Toggl API rate limited during initialization - hook will run in degraded mode")
-                print("⚠️  Toggl API rate limited - running without Toggl integration", file=sys.stderr)
+            if (
+                "402" in error_str
+                or "429" in error_str
+                or "rate limit" in error_str
+                or "hourly limit" in error_str
+            ):
+                logger.warning(
+                    "Toggl API rate limited during initialization - hook will run in degraded mode"
+                )
+                print(
+                    "⚠️  Toggl API rate limited - running without Toggl integration", file=sys.stderr
+                )
             else:
                 logger.error(f"Failed to initialize Toggl API: {e}")
                 print(f"⚠️  Toggl API unavailable: {e}", file=sys.stderr)
@@ -196,22 +216,32 @@ class TogglTaskwarriorHook:
         """Check if the error is due to API rate limiting."""
         error_str = str(error).lower()
         # Toggl returns 429 for rate limiting, 402 for hourly limit on free plans
-        return ('429' in error_str or '402' in error_str or
-                'rate limit' in error_str or 'too many requests' in error_str or
-                'hourly limit' in error_str)
+        return (
+            "429" in error_str
+            or "402" in error_str
+            or "rate limit" in error_str
+            or "too many requests" in error_str
+            or "hourly limit" in error_str
+        )
 
     def _handle_api_error(self, error: Exception, operation: str) -> None:
         """Handle API errors gracefully and log appropriately."""
         if self._is_rate_limit_error(error):
             logger.warning(f"Toggl API rate limit hit during {operation}")
-            print(f"⚠️  Toggl rate limit reached - {operation} skipped (task will continue)", file=sys.stderr)
+            print(
+                f"⚠️  Toggl rate limit reached - {operation} skipped (task will continue)",
+                file=sys.stderr,
+            )
             raise TogglRateLimitError(f"Rate limit hit during {operation}")
         else:
             logger.error(f"Toggl API error during {operation}: {error}")
-            print(f"⚠️  Toggl API error during {operation} - operation skipped (task will continue)", file=sys.stderr)
+            print(
+                f"⚠️  Toggl API error during {operation} - operation skipped (task will continue)",
+                file=sys.stderr,
+            )
             raise TogglAPIError(f"API error during {operation}")
 
-    def extract_client_from_tags(self, tags: List[str]) -> Optional[str]:
+    def extract_client_from_tags(self, tags: list[str]) -> str | None:
         """
         Extract client name from tags in format 'client:xyz' or 'client.xyz'.
 
@@ -225,14 +255,14 @@ class TogglTaskwarriorHook:
             return None
 
         for tag in tags:
-            if tag.startswith('client:') or tag.startswith('client.'):
+            if tag.startswith("client:") or tag.startswith("client."):
                 client_name = tag[7:]  # Remove 'client:' or 'client.' prefix
                 if client_name:
                     return client_name
 
         return None
 
-    def get_or_create_toggl_client(self, client_name: str) -> Optional[TogglClient]:
+    def get_or_create_toggl_client(self, client_name: str) -> TogglClient | None:
         """
         Get existing Toggl client or create new one (with caching).
 
@@ -276,7 +306,9 @@ class TogglTaskwarriorHook:
             self._handle_api_error(e, f"getting/creating client '{client_name}'")
             return None
 
-    def get_or_create_toggl_project(self, project_name: str, client: Optional[TogglClient] = None) -> Optional[TogglProject]:
+    def get_or_create_toggl_project(
+        self, project_name: str, client: TogglClient | None = None
+    ) -> TogglProject | None:
         """
         Get existing Toggl project or create new one (with caching).
 
@@ -323,7 +355,7 @@ class TogglTaskwarriorHook:
             self._handle_api_error(e, f"getting/creating project '{project_name}'")
             return None
 
-    def process_task_start(self, task: Dict[str, Any]) -> None:
+    def process_task_start(self, task: dict[str, Any]) -> None:
         """
         Handle task start event by starting Toggl timer.
 
@@ -335,9 +367,9 @@ class TogglTaskwarriorHook:
             return
 
         try:
-            description = task.get('description', 'Untitled Task')
-            tags = task.get('tags', [])
-            project_name = task.get('project', '')
+            description = task.get("description", "Untitled Task")
+            tags = task.get("tags", [])
+            project_name = task.get("project", "")
 
             logger.info(f"Starting timer for task: {description}")
 
@@ -348,8 +380,8 @@ class TogglTaskwarriorHook:
                 client = self.get_or_create_toggl_client(client_name)
 
             # Handle nested projects - extract client from project if no client tag
-            if project_name and '.' in project_name:
-                parts = project_name.split('.', 1)  # Split on first dot only
+            if project_name and "." in project_name:
+                parts = project_name.split(".", 1)  # Split on first dot only
                 project_client = parts[0]
                 project_name = parts[1]  # Everything after first dot
 
@@ -360,7 +392,7 @@ class TogglTaskwarriorHook:
 
             # Default project name if none specified
             if not project_name:
-                project_name = 'General'
+                project_name = "General"
 
             # Get or create project
             project = self.get_or_create_toggl_project(project_name, client)
@@ -382,7 +414,7 @@ class TogglTaskwarriorHook:
             logger.error(f"Failed to start Toggl timer: {e}")
             print(f"⚠️  Failed to start Toggl timer: {e} (task will continue)", file=sys.stderr)
 
-    def process_task_stop(self, task: Dict[str, Any]) -> None:
+    def process_task_stop(self, task: dict[str, Any]) -> None:
         """
         Handle task stop/completion event by stopping Toggl timer.
 
@@ -394,7 +426,7 @@ class TogglTaskwarriorHook:
             return
 
         try:
-            description = task.get('description', 'Untitled Task')
+            description = task.get("description", "Untitled Task")
             logger.info(f"Stopping timer for task: {description}")
 
             # Stop the current timer
@@ -404,7 +436,9 @@ class TogglTaskwarriorHook:
                 duration_seconds = stopped_entry.duration
                 duration_minutes = duration_seconds // 60
 
-                logger.info(f"Stopped Toggl timer: {stopped_entry.description} ({duration_minutes}m)")
+                logger.info(
+                    f"Stopped Toggl timer: {stopped_entry.description} ({duration_minutes}m)"
+                )
 
                 # Get project name from cache (avoids API call)
                 project_info = ""
@@ -414,7 +448,9 @@ class TogglTaskwarriorHook:
                             project_info = f" in project '{project.name}'"
                             break
 
-                print(f"⏹️  Stopped Toggl timer{project_info}: {stopped_entry.description} ({duration_minutes}m)")
+                print(
+                    f"⏹️  Stopped Toggl timer{project_info}: {stopped_entry.description} ({duration_minutes}m)"
+                )
 
                 # Note: Removed time entry fetches to reduce API calls
                 # Users can check totals in Toggl web/app if needed
@@ -433,7 +469,7 @@ class TogglTaskwarriorHook:
 
         # Complete Raycast Focus mode session if one is active
         try:
-            subprocess.run(['open', 'raycast://focus/complete'], check=False)
+            subprocess.run(["open", "raycast://focus/complete"], check=False)
             logger.info("Attempted to complete Raycast Focus mode session")
             print("🎯 Completed Raycast Focus mode session (if one was active)")
 
@@ -442,7 +478,7 @@ class TogglTaskwarriorHook:
             # Don't print this error - Raycast may not be running
             pass
 
-    def process_hook(self, old_task: Dict[str, Any], new_task: Dict[str, Any]) -> Dict[str, Any]:
+    def process_hook(self, old_task: dict[str, Any], new_task: dict[str, Any]) -> dict[str, Any]:
         """
         Process the hook event and return the modified task.
 
@@ -455,11 +491,11 @@ class TogglTaskwarriorHook:
         """
         try:
             # Detect task start
-            if 'start' in new_task and 'start' not in old_task:
+            if "start" in new_task and "start" not in old_task:
                 self.process_task_start(new_task)
 
             # Detect task stop/completion
-            elif ('start' not in new_task or 'end' in new_task) and 'start' in old_task:
+            elif ("start" not in new_task or "end" in new_task) and "start" in old_task:
                 self.process_task_stop(new_task)
 
         except (TogglRateLimitError, TogglAPIError):
@@ -477,7 +513,7 @@ def main():
     """Main hook entry point."""
     try:
         # Read input from stdin
-        input_stream = sys.stdin.buffer if hasattr(sys.stdin, 'buffer') else sys.stdin
+        input_stream = sys.stdin.buffer if hasattr(sys.stdin, "buffer") else sys.stdin
 
         # Parse old and new task JSON
         old_task = json.loads(input_stream.readline().decode("utf-8", errors="replace"))

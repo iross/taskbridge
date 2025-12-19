@@ -1,100 +1,73 @@
 """Database operations for TaskBridge."""
 
-import sqlite3
 import json
-from pathlib import Path
-from datetime import datetime
-from typing import List, Dict, Any, Optional
+import sqlite3
 from dataclasses import dataclass
-
-
-@dataclass
-class Project:
-    """Project mapping data structure."""
-    id: Optional[int] = None
-    linear_id: Optional[str] = None
-    linear_name: Optional[str] = None
-    toggl_client_id: Optional[str] = None
-    toggl_project_id: Optional[str] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+from datetime import datetime
+from pathlib import Path
+from typing import Any
 
 
 @dataclass
 class SyncLogEntry:
     """Sync log entry data structure."""
-    id: Optional[int] = None
+
+    id: int | None = None
     action: str = ""
-    timestamp: Optional[datetime] = None
+    timestamp: datetime | None = None
     details: str = ""
 
 
 @dataclass
 class TodoistNoteMapping:
     """Todoist task to Obsidian note mapping."""
-    id: Optional[int] = None
+
+    id: int | None = None
     todoist_task_id: str = ""
-    todoist_project_id: Optional[str] = None
+    todoist_project_id: str | None = None
     note_path: str = ""
     obsidian_url: str = ""
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class Database:
     """Database operations for TaskBridge."""
-    
-    def __init__(self, db_path: Optional[str] = None):
+
+    def __init__(self, db_path: str | None = None):
         if db_path is None:
             config_dir = Path.home() / ".taskbridge"
             config_dir.mkdir(exist_ok=True)
             db_path = str(config_dir / "mappings.db")
-        
+
         self.db_path = db_path
         self._init_database()
-    
+
     def _init_database(self) -> None:
         """Initialize database with required tables."""
         with sqlite3.connect(self.db_path) as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS projects (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    linear_id TEXT,
-                    linear_name TEXT,
-                    toggl_client_id TEXT,
-                    toggl_project_id TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            
-            conn.execute("""
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS sync_log (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     action TEXT NOT NULL,
                     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     details TEXT
                 )
-            """)
-            
+            """
+            )
+
             # Create indices for better performance
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_projects_linear_id 
-                ON projects(linear_id)
-            """)
-            
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_projects_toggl_ids 
-                ON projects(toggl_client_id, toggl_project_id)
-            """)
-            
-            conn.execute("""
+            conn.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_sync_log_timestamp
                 ON sync_log(timestamp)
-            """)
+            """
+            )
 
             # Todoist notes mapping table
-            conn.execute("""
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS todoist_notes (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     todoist_task_id TEXT UNIQUE NOT NULL,
@@ -104,203 +77,77 @@ class Database:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
-            """)
+            """
+            )
 
-            conn.execute("""
+            conn.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_todoist_notes_task_id
                 ON todoist_notes(todoist_task_id)
-            """)
+            """
+            )
 
-            conn.execute("""
+            conn.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_todoist_notes_project_id
                 ON todoist_notes(todoist_project_id)
-            """)
+            """
+            )
 
             conn.commit()
-    
-    def create_project(self, project: Project) -> int:
-        """Create a new project mapping."""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute("""
-                INSERT INTO projects (linear_id, linear_name, toggl_client_id, toggl_project_id)
-                VALUES (?, ?, ?, ?)
-            """, (project.linear_id, project.linear_name, project.toggl_client_id, project.toggl_project_id))
-            
-            conn.commit()
-            return cursor.lastrowid
-    
-    def get_project(self, project_id: int) -> Optional[Project]:
-        """Get a project by ID."""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.execute("""
-                SELECT * FROM projects WHERE id = ?
-            """, (project_id,))
-            
-            row = cursor.fetchone()
-            if row:
-                return Project(
-                    id=row['id'],
-                    linear_id=row['linear_id'],
-                    linear_name=row['linear_name'],
-                    toggl_client_id=row['toggl_client_id'],
-                    toggl_project_id=row['toggl_project_id'],
-                    created_at=datetime.fromisoformat(row['created_at']) if row['created_at'] else None,
-                    updated_at=datetime.fromisoformat(row['updated_at']) if row['updated_at'] else None
-                )
-            return None
-    
-    def get_project_by_linear_id(self, linear_id: str) -> Optional[Project]:
-        """Get a project by Linear ID."""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.execute("""
-                SELECT * FROM projects WHERE linear_id = ?
-            """, (linear_id,))
-            
-            row = cursor.fetchone()
-            if row:
-                return Project(
-                    id=row['id'],
-                    linear_id=row['linear_id'],
-                    linear_name=row['linear_name'],
-                    toggl_client_id=row['toggl_client_id'],
-                    toggl_project_id=row['toggl_project_id'],
-                    created_at=datetime.fromisoformat(row['created_at']) if row['created_at'] else None,
-                    updated_at=datetime.fromisoformat(row['updated_at']) if row['updated_at'] else None
-                )
-            return None
-    
-    def get_project_by_toggl_ids(self, toggl_client_id: str, toggl_project_id: str) -> Optional[Project]:
-        """Get a project by Toggl client and project IDs."""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.execute("""
-                SELECT * FROM projects WHERE toggl_client_id = ? AND toggl_project_id = ?
-            """, (toggl_client_id, toggl_project_id))
-            
-            row = cursor.fetchone()
-            if row:
-                return Project(
-                    id=row['id'],
-                    linear_id=row['linear_id'],
-                    linear_name=row['linear_name'],
-                    toggl_client_id=row['toggl_client_id'],
-                    toggl_project_id=row['toggl_project_id'],
-                    created_at=datetime.fromisoformat(row['created_at']) if row['created_at'] else None,
-                    updated_at=datetime.fromisoformat(row['updated_at']) if row['updated_at'] else None
-                )
-            return None
-    
-    def get_project_by_toggl_id(self, toggl_project_id: str) -> Optional[Project]:
-        """Get a project by Toggl project ID."""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.execute("""
-                SELECT * FROM projects WHERE toggl_project_id = ?
-            """, (toggl_project_id,))
-            
-            row = cursor.fetchone()
-            if row:
-                return Project(
-                    id=row['id'],
-                    linear_id=row['linear_id'],
-                    linear_name=row['linear_name'],
-                    toggl_client_id=row['toggl_client_id'],
-                    toggl_project_id=row['toggl_project_id'],
-                    created_at=datetime.fromisoformat(row['created_at']) if row['created_at'] else None,
-                    updated_at=datetime.fromisoformat(row['updated_at']) if row['updated_at'] else None
-                )
-            return None
-    
-    def get_all_projects(self) -> List[Project]:
-        """Get all project mappings."""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.execute("""
-                SELECT * FROM projects ORDER BY created_at DESC
-            """)
-            
-            projects = []
-            for row in cursor.fetchall():
-                projects.append(Project(
-                    id=row['id'],
-                    linear_id=row['linear_id'],
-                    linear_name=row['linear_name'],
-                    toggl_client_id=row['toggl_client_id'],
-                    toggl_project_id=row['toggl_project_id'],
-                    created_at=datetime.fromisoformat(row['created_at']) if row['created_at'] else None,
-                    updated_at=datetime.fromisoformat(row['updated_at']) if row['updated_at'] else None
-                ))
-            return projects
-    
-    def update_project(self, project: Project) -> bool:
-        """Update an existing project mapping."""
-        if not project.id:
-            return False
-        
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute("""
-                UPDATE projects 
-                SET linear_id = ?, linear_name = ?, toggl_client_id = ?, toggl_project_id = ?,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-            """, (project.linear_id, project.linear_name, project.toggl_client_id, 
-                  project.toggl_project_id, project.id))
-            
-            conn.commit()
-            return cursor.rowcount > 0
-    
-    def delete_project(self, project_id: int) -> bool:
-        """Delete a project mapping."""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute("""
-                DELETE FROM projects WHERE id = ?
-            """, (project_id,))
-            
-            conn.commit()
-            return cursor.rowcount > 0
-    
-    def log_sync_action(self, action: str, details: Dict[str, Any] = None) -> int:
+
+    def log_sync_action(self, action: str, details: dict[str, Any] = None) -> int:
         """Log a sync action."""
         details_json = json.dumps(details) if details else None
-        
+
         with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute("""
+            cursor = conn.execute(
+                """
                 INSERT INTO sync_log (action, details)
                 VALUES (?, ?)
-            """, (action, details_json))
-            
+            """,
+                (action, details_json),
+            )
+
             conn.commit()
             return cursor.lastrowid
-    
-    def get_sync_log(self, limit: int = 100) -> List[SyncLogEntry]:
+
+    def get_sync_log(self, limit: int = 100) -> list[SyncLogEntry]:
         """Get recent sync log entries."""
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
-            cursor = conn.execute("""
-                SELECT * FROM sync_log 
-                ORDER BY timestamp DESC 
+            cursor = conn.execute(
+                """
+                SELECT * FROM sync_log
+                ORDER BY timestamp DESC
                 LIMIT ?
-            """, (limit,))
-            
+            """,
+                (limit,),
+            )
+
             entries = []
             for row in cursor.fetchall():
-                entries.append(SyncLogEntry(
-                    id=row['id'],
-                    action=row['action'],
-                    timestamp=datetime.fromisoformat(row['timestamp']) if row['timestamp'] else None,
-                    details=row['details'] or ""
-                ))
+                entries.append(
+                    SyncLogEntry(
+                        id=row["id"],
+                        action=row["action"],
+                        timestamp=datetime.fromisoformat(row["timestamp"])
+                        if row["timestamp"]
+                        else None,
+                        details=row["details"] or "",
+                    )
+                )
             return entries
-    
+
     def clear_sync_log(self, older_than_days: int = 30) -> int:
         """Clear old sync log entries."""
         with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute("""
+            cursor = conn.execute(
+                f"""
                 DELETE FROM sync_log
-                WHERE timestamp < datetime('now', '-{} days')
-            """.format(older_than_days))
+                WHERE timestamp < datetime('now', '-{older_than_days} days')
+            """
+            )
 
             conn.commit()
             return cursor.rowcount
@@ -308,54 +155,79 @@ class Database:
     def create_todoist_note_mapping(self, mapping: TodoistNoteMapping) -> int:
         """Create a new Todoist task to Obsidian note mapping."""
         with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute("""
-                INSERT INTO todoist_notes (todoist_task_id, todoist_project_id, note_path, obsidian_url)
+            cursor = conn.execute(
+                """
+                INSERT INTO todoist_notes (
+                    todoist_task_id, todoist_project_id, note_path, obsidian_url
+                )
                 VALUES (?, ?, ?, ?)
-            """, (mapping.todoist_task_id, mapping.todoist_project_id, mapping.note_path, mapping.obsidian_url))
+            """,
+                (
+                    mapping.todoist_task_id,
+                    mapping.todoist_project_id,
+                    mapping.note_path,
+                    mapping.obsidian_url,
+                ),
+            )
 
             conn.commit()
             return cursor.lastrowid
 
-    def get_todoist_note_by_task_id(self, task_id: str) -> Optional[TodoistNoteMapping]:
+    def get_todoist_note_by_task_id(self, task_id: str) -> TodoistNoteMapping | None:
         """Get Todoist note mapping by task ID."""
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
-            cursor = conn.execute("""
+            cursor = conn.execute(
+                """
                 SELECT * FROM todoist_notes WHERE todoist_task_id = ?
-            """, (task_id,))
+            """,
+                (task_id,),
+            )
 
             row = cursor.fetchone()
             if row:
                 return TodoistNoteMapping(
-                    id=row['id'],
-                    todoist_task_id=row['todoist_task_id'],
-                    todoist_project_id=row['todoist_project_id'],
-                    note_path=row['note_path'],
-                    obsidian_url=row['obsidian_url'],
-                    created_at=datetime.fromisoformat(row['created_at']) if row['created_at'] else None,
-                    updated_at=datetime.fromisoformat(row['updated_at']) if row['updated_at'] else None
+                    id=row["id"],
+                    todoist_task_id=row["todoist_task_id"],
+                    todoist_project_id=row["todoist_project_id"],
+                    note_path=row["note_path"],
+                    obsidian_url=row["obsidian_url"],
+                    created_at=datetime.fromisoformat(row["created_at"])
+                    if row["created_at"]
+                    else None,
+                    updated_at=datetime.fromisoformat(row["updated_at"])
+                    if row["updated_at"]
+                    else None,
                 )
             return None
 
-    def get_all_todoist_mappings(self) -> List[TodoistNoteMapping]:
+    def get_all_todoist_mappings(self) -> list[TodoistNoteMapping]:
         """Get all Todoist note mappings."""
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
-            cursor = conn.execute("""
+            cursor = conn.execute(
+                """
                 SELECT * FROM todoist_notes ORDER BY created_at DESC
-            """)
+            """
+            )
 
             mappings = []
             for row in cursor.fetchall():
-                mappings.append(TodoistNoteMapping(
-                    id=row['id'],
-                    todoist_task_id=row['todoist_task_id'],
-                    todoist_project_id=row['todoist_project_id'],
-                    note_path=row['note_path'],
-                    obsidian_url=row['obsidian_url'],
-                    created_at=datetime.fromisoformat(row['created_at']) if row['created_at'] else None,
-                    updated_at=datetime.fromisoformat(row['updated_at']) if row['updated_at'] else None
-                ))
+                mappings.append(
+                    TodoistNoteMapping(
+                        id=row["id"],
+                        todoist_task_id=row["todoist_task_id"],
+                        todoist_project_id=row["todoist_project_id"],
+                        note_path=row["note_path"],
+                        obsidian_url=row["obsidian_url"],
+                        created_at=datetime.fromisoformat(row["created_at"])
+                        if row["created_at"]
+                        else None,
+                        updated_at=datetime.fromisoformat(row["updated_at"])
+                        if row["updated_at"]
+                        else None,
+                    )
+                )
             return mappings
 
     def update_todoist_note_mapping(self, mapping: TodoistNoteMapping) -> bool:
@@ -364,12 +236,15 @@ class Database:
             return False
 
         with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute("""
+            cursor = conn.execute(
+                """
                 UPDATE todoist_notes
                 SET todoist_project_id = ?, note_path = ?, obsidian_url = ?,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
-            """, (mapping.todoist_project_id, mapping.note_path, mapping.obsidian_url, mapping.id))
+            """,
+                (mapping.todoist_project_id, mapping.note_path, mapping.obsidian_url, mapping.id),
+            )
 
             conn.commit()
             return cursor.rowcount > 0

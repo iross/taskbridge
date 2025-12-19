@@ -3,7 +3,7 @@
 import subprocess
 import urllib.parse
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import requests
 import typer
@@ -37,7 +37,7 @@ class Config:
         self.config_dir.mkdir(exist_ok=True)
 
         try:
-            with open(self.config_file, 'w') as f:
+            with open(self.config_file, "w") as f:
                 yaml.safe_dump(self._config_data, f, default_flow_style=False)
         except Exception as e:
             typer.echo(f"Error saving config: {e}")
@@ -51,21 +51,13 @@ class Config:
         self._config_data[key] = value
         self._save_config()
 
-    def get_linear_token(self) -> Optional[str]:
-        """Get Linear API token."""
-        return self.get('linear_token')
-
-    def get_toggl_token(self) -> Optional[str]:
-        """Get Toggl API token."""
-        return self.get('toggl_token')
-
-    def get_todoist_token(self) -> Optional[str]:
+    def get_todoist_token(self) -> str | None:
         """Get Todoist API token."""
-        return self.get('todoist_token')
+        return self.get("todoist_token")
 
     def get_todoist_sync_label(self) -> str:
         """Get Todoist sync label for automatic note creation."""
-        return self.get('todoist_sync_label', '@obsidian')
+        return self.get("todoist_sync_label", "@obsidian")
 
     def get_todoist_project_mappings(self) -> dict[str, dict[str, str]]:
         """Get Todoist project to Obsidian folder mappings.
@@ -73,54 +65,50 @@ class Config:
         Returns:
             Dict mapping project IDs to {client: str, folder: str}
         """
-        return self.get('todoist_project_mappings', {})
+        return self.get("todoist_project_mappings", {})
 
     def set_todoist_project_mapping(self, project_id: str, client: str, folder: str) -> None:
         """Set mapping for a Todoist project to Obsidian folder."""
         mappings = self.get_todoist_project_mappings()
-        mappings[project_id] = {'client': client, 'folder': folder}
-        self.set('todoist_project_mappings', mappings)
+        mappings[project_id] = {"client": client, "folder": folder}
+        self.set("todoist_project_mappings", mappings)
 
     def validate_todoist_token(self, token: str) -> bool:
         """Validate Todoist API token."""
         try:
-            headers = {'Authorization': f'Bearer {token}'}
+            headers = {"Authorization": f"Bearer {token}"}
             response = requests.get(
-                'https://api.todoist.com/rest/v2/projects',
-                headers=headers,
-                timeout=10
+                "https://api.todoist.com/rest/v2/projects", headers=headers, timeout=10
             )
             return response.status_code == 200
         except Exception:
             return False
 
-    def get_obsidian_vault_path(self) -> Optional[str]:
+    def get_obsidian_vault_path(self) -> str | None:
         """Get Obsidian vault path."""
-        return self.get('obsidian_vault_path')
+        return self.get("obsidian_vault_path")
 
-    def get_obsidian_vault_name(self) -> Optional[str]:
+    def get_obsidian_vault_name(self) -> str | None:
         """Get Obsidian vault name."""
-        return self.get('obsidian_vault_name', 'obsidian')
-    
+        return self.get("obsidian_vault_name", "obsidian")
+
     def get_taskwarrior_cmd(self) -> str:
         """Get Taskwarrior command path."""
-        return self.get('taskwarrior_cmd', 'task')
-    
+        return self.get("taskwarrior_cmd", "task")
+
     def set_taskwarrior_cmd(self, cmd_path: str) -> None:
         """Set Taskwarrior command path."""
-        self.set('taskwarrior_cmd', cmd_path)
-    
+        self.set("taskwarrior_cmd", cmd_path)
+
     def get_taskwarrior_enabled(self) -> bool:
         """Check if Taskwarrior integration is enabled."""
-        return self.get('taskwarrior_enabled', False)
-    
+        return self.get("taskwarrior_enabled", False)
+
     def set_taskwarrior_enabled(self, enabled: bool) -> None:
         """Enable or disable Taskwarrior integration."""
-        self.set('taskwarrior_enabled', enabled)
+        self.set("taskwarrior_enabled", enabled)
 
-    def set_obsidian_config(
-        self, vault_path: str, vault_name: str = 'obsidian'
-    ) -> None:
+    def set_obsidian_config(self, vault_path: str, vault_name: str = "obsidian") -> None:
         """Set Obsidian vault configuration."""
         # Validate the vault path exists
         vault_path_obj = Path(vault_path).expanduser()
@@ -129,8 +117,8 @@ class Config:
         if not vault_path_obj.is_dir():
             raise ValueError(f"Vault path is not a directory: {vault_path}")
 
-        self.set('obsidian_vault_path', str(vault_path_obj))
-        self.set('obsidian_vault_name', vault_name)
+        self.set("obsidian_vault_path", str(vault_path_obj))
+        self.set("obsidian_vault_name", vault_name)
 
     def create_project_directory(self, project_name: str) -> Path:
         """Create a project directory in the Obsidian vault."""
@@ -161,25 +149,23 @@ class Config:
         project_dir = self.create_project_directory(project_name)
 
         # Sanitize filename
-        safe_title = "".join(
-            c for c in task_title if c.isalnum() or c in (' ', '-', '_')
-        ).rstrip()
+        safe_title = "".join(c for c in task_title if c.isalnum() or c in (" ", "-", "_")).rstrip()
         note_path = project_dir / f"{safe_title}.md"
 
         # Create frontmatter
         frontmatter = {
-            'fileClass': 'task',
-            'project': project_name,
-            'status': status,
-            'client': client,
-            'tags': tags,
-            'due': ''
+            "fileClass": "task",
+            "project": project_name,
+            "status": status,
+            "client": client,
+            "tags": tags,
+            "due": "",
         }
 
         # Only create the note if it doesn't already exist
         if not note_path.exists():
             # Write the note with frontmatter
-            with open(note_path, 'w') as f:
+            with open(note_path, "w") as f:
                 f.write("---\n")
                 for key, value in frontmatter.items():
                     if isinstance(value, list):
@@ -210,7 +196,7 @@ class Config:
 
         try:
             # Use subprocess to open the URL with the default handler
-            subprocess.run(['open', url], check=True)
+            subprocess.run(["open", url], check=True)
             return True
         except subprocess.CalledProcessError:
             return False
@@ -218,94 +204,11 @@ class Config:
             # 'open' command not available (not on macOS)
             try:
                 # Try with xdg-open (Linux)
-                subprocess.run(['xdg-open', url], check=True)
+                subprocess.run(["xdg-open", url], check=True)
                 return True
             except (subprocess.CalledProcessError, FileNotFoundError):
                 return False
 
-    def validate_linear_token(self, token: str) -> bool:
-        """Validate Linear API token."""
-        try:
-            headers = {'Authorization': token, 'Content-Type': 'application/json'}
-            # Test with a simple GraphQL query
-            payload = {"query": "query { viewer { id name } }"}
-            response = requests.post(
-                'https://api.linear.app/graphql',
-                headers=headers,
-                json=payload,
-                timeout=10
-            )
-
-            if response.status_code != 200:
-                return False
-
-            data = response.json()
-            return 'errors' not in data and 'viewer' in data.get('data', {})
-        except Exception:
-            return False
-
-    def validate_toggl_token(self, token: str) -> bool:
-        """Validate Toggl API token."""
-        try:
-            auth = (token, 'api_token')
-            response = requests.get(
-                'https://api.track.toggl.com/api/v9/me', auth=auth, timeout=10
-            )
-            return response.status_code == 200
-        except Exception:
-            return False
-
-    def setup_interactive(self) -> None:
-        """Interactive configuration setup."""
-        typer.echo("TaskBridge Configuration Setup")
-        typer.echo("=" * 35)
-
-        # Get Linear token
-        current_linear = self.get_linear_token()
-        if current_linear:
-            typer.echo(f"Current Linear token: {current_linear[:8]}...")
-            if not typer.confirm("Update Linear token?"):
-                linear_token = current_linear
-            else:
-                linear_token = typer.prompt("Enter Linear API token")
-        else:
-            linear_token = typer.prompt("Enter Linear API token")
-
-        # Validate Linear token
-        typer.echo("Validating Linear token...")
-        if not self.validate_linear_token(linear_token):
-            typer.echo(
-                "❌ Invalid Linear token. Please check your token and try again."
-            )
-            raise typer.Exit(1)
-        typer.echo("✅ Linear token is valid")
-
-        # Get Toggl token
-        current_toggl = self.get_toggl_token()
-        if current_toggl:
-            typer.echo(f"Current Toggl token: {current_toggl[:8]}...")
-            if not typer.confirm("Update Toggl token?"):
-                toggl_token = current_toggl
-            else:
-                toggl_token = typer.prompt("Enter Toggl API token")
-        else:
-            toggl_token = typer.prompt("Enter Toggl API token")
-
-        # Validate Toggl token
-        typer.echo("Validating Toggl token...")
-        if not self.validate_toggl_token(toggl_token):
-            typer.echo("❌ Invalid Toggl token. Please check your token and try again.")
-            raise typer.Exit(1)
-        typer.echo("✅ Toggl token is valid")
-
-        # Save configuration
-        self.set('linear_token', linear_token)
-        self.set('toggl_token', toggl_token)
-
-        typer.echo(f"✅ Configuration saved to {self.config_file}")
-        typer.echo("You can now use TaskBridge commands!")
-
 
 # Global config instance
 config = Config()
-

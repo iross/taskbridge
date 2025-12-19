@@ -1,8 +1,8 @@
 """Global pytest fixtures for taskbridge tests."""
 
+from unittest.mock import MagicMock, Mock
+
 import pytest
-from unittest.mock import Mock, MagicMock
-from pathlib import Path
 
 
 @pytest.fixture
@@ -61,7 +61,9 @@ def mock_todoist_api():
     mock.get_project.return_value = None
     mock.get_tasks.return_value = []
     mock.get_task.return_value = None
-    mock.create_project.return_value = Mock(id="proj-123", name="Test Project", url="https://todoist.com/app/project/proj-123")
+    mock.create_project.return_value = Mock(
+        id="proj-123", name="Test Project", url="https://todoist.com/app/project/proj-123"
+    )
     mock.create_comment.return_value = True
     return mock
 
@@ -88,6 +90,7 @@ def temp_vault(tmp_path):
 def sample_todoist_task():
     """Sample Todoist task data."""
     from taskbridge.todoist_api import TodoistTask
+
     return TodoistTask(
         id="task-123",
         content="Test Task",
@@ -95,7 +98,7 @@ def sample_todoist_task():
         project_id="proj-456",
         labels=["@obsidian", "important"],
         priority=1,
-        url="https://todoist.com/app/task/task-123"
+        url="https://todoist.com/app/task/task-123",
     )
 
 
@@ -103,11 +106,12 @@ def sample_todoist_task():
 def sample_todoist_project():
     """Sample Todoist project data."""
     from taskbridge.todoist_api import TodoistProject
+
     return TodoistProject(
         id="proj-123",
         name="Test Project",
         color="blue",
-        url="https://todoist.com/app/project/proj-123"
+        url="https://todoist.com/app/project/proj-123",
     )
 
 

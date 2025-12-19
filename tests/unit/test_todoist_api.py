@@ -1,8 +1,10 @@
 """Unit tests for Todoist API client."""
 
-import pytest
 from unittest.mock import Mock, patch
-from taskbridge.todoist_api import TodoistAPI, TodoistProject, TodoistTask
+
+import pytest
+
+from taskbridge.todoist_api import TodoistAPI, TodoistTask
 
 
 class TestTodoistAPI:
@@ -19,17 +21,17 @@ class TestTodoistAPI:
         with pytest.raises(ValueError, match="Todoist API token is required"):
             TodoistAPI()
 
-    @patch('taskbridge.todoist_api.requests.Session')
-    def test_validate_token_success(self, mock_session):
+    @patch("taskbridge.todoist_api.requests.get")
+    def test_validate_token_success(self, mock_get):
         """Test successful token validation."""
         mock_response = Mock()
         mock_response.status_code = 200
-        mock_session.return_value.get.return_value = mock_response
+        mock_get.return_value = mock_response
 
         api = TodoistAPI(token="test-token")
         assert api.validate_token("test-token") is True
 
-    @patch('taskbridge.todoist_api.requests.Session')
+    @patch("taskbridge.todoist_api.requests.Session")
     def test_get_projects(self, mock_session, mock_todoist_api):
         """Test getting projects from API."""
         # This is a placeholder - you can expand with actual test logic
@@ -38,10 +40,7 @@ class TestTodoistAPI:
     def test_todoist_task_dataclass(self):
         """Test TodoistTask dataclass initialization."""
         task = TodoistTask(
-            id="123",
-            content="Test Task",
-            description="Test description",
-            project_id="proj-456"
+            id="123", content="Test Task", description="Test description", project_id="proj-456"
         )
         assert task.id == "123"
         assert task.content == "Test Task"
