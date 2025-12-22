@@ -93,22 +93,6 @@ class Config:
         """Get Obsidian vault name."""
         return self.get("obsidian_vault_name", "obsidian")
 
-    def get_taskwarrior_cmd(self) -> str:
-        """Get Taskwarrior command path."""
-        return self.get("taskwarrior_cmd", "task")
-
-    def set_taskwarrior_cmd(self, cmd_path: str) -> None:
-        """Set Taskwarrior command path."""
-        self.set("taskwarrior_cmd", cmd_path)
-
-    def get_taskwarrior_enabled(self) -> bool:
-        """Check if Taskwarrior integration is enabled."""
-        return self.get("taskwarrior_enabled", False)
-
-    def set_taskwarrior_enabled(self, enabled: bool) -> None:
-        """Enable or disable Taskwarrior integration."""
-        self.set("taskwarrior_enabled", enabled)
-
     def set_obsidian_config(self, vault_path: str, vault_name: str = "obsidian") -> None:
         """Set Obsidian vault configuration."""
         # Validate the vault path exists

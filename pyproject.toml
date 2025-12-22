@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "taskbridge"
 version = "0.1.0"
-description = "Python library + CLI that maintains synchronized project/client mappings between Linear and Toggl"
+description = "Python CLI for integrating Todoist tasks with Obsidian notes"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [
