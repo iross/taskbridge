@@ -15,9 +15,10 @@ class TestTodoistAPI:
         api = TodoistAPI(token="test-token")
         assert api.token == "test-token"
 
-    def test_init_without_token_raises_error(self, mock_config):
+    @patch("taskbridge.todoist_api.config_manager")
+    def test_init_without_token_raises_error(self, mock_config_manager):
         """Test API initialization without token raises ValueError."""
-        mock_config.get_todoist_token.return_value = None
+        mock_config_manager.get_todoist_token.return_value = None
         with pytest.raises(ValueError, match="Todoist API token is required"):
             TodoistAPI()
 

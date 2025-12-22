@@ -111,11 +111,3 @@ ignore = []
 quote-style = "double"
 indent-style = "space"
 skip-magic-trailing-comma = false
-
-# Type checking configuration
-[tool.ty]
-python-version = "3.11"
-strict = true
-warn-redundant-casts = true
-warn-unused-ignores = true
-warn-return-any = true

@@ -71,9 +71,9 @@ class TaskWarriorAPI:
             if "task" not in result.stdout.lower():
                 raise ValueError("Invalid Taskwarrior installation")
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            raise ValueError(f"Taskwarrior not available: {e}")
+            raise ValueError(f"Taskwarrior not available: {e}") from e
 
-    def _run_task_command(self, args: list[str], input_data: str = None) -> str:
+    def _run_task_command(self, args: list[str], input_data: str = "") -> str:
         """Run a task command and return output.
 
         Args:
@@ -93,7 +93,7 @@ class TaskWarriorAPI:
             )
             return result.stdout
         except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"Task command failed: {e.stderr}")
+            raise RuntimeError(f"Task command failed: {e.stderr}") from e
 
     def get_all_tasks(self, status: str | None = None) -> list[TaskWarriorTask]:
         """Get all tasks, optionally filtered by status.
@@ -122,7 +122,7 @@ class TaskWarriorAPI:
 
             return tasks
         except json.JSONDecodeError as e:
-            raise RuntimeError(f"Failed to parse task export: {e}")
+            raise RuntimeError(f"Failed to parse task export: {e}") from e
 
     def get_pending_tasks(self) -> list[TaskWarriorTask]:
         """Get all pending tasks."""

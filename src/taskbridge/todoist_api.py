@@ -1,7 +1,7 @@
 """Todoist API client for TaskBridge."""
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import requests
@@ -38,7 +38,7 @@ class TodoistTask:
     section_id: str | None = None
     parent_id: str | None = None
     order: int = 0
-    labels: list[str] = None
+    labels: list[str] = field(default_factory=lambda: [])
     priority: int = 1
     due: dict[str, Any] | None = None
     url: str = ""
@@ -323,4 +323,43 @@ class TodoistAPI:
             return True
         except Exception as e:
             self.logger.error(f"Failed to update task {task_id}: {e}")
+            return False
+
+    def close_task(self, task_id: str) -> bool:
+        """Close/complete a task."""
+        try:
+            self._make_request("POST", f"/tasks/{task_id}/close")
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to close task {task_id}: {e}")
+            return False
+
+    def update_project(self, project_id: str, **kwargs) -> bool:
+        """Update a project with the provided fields."""
+        try:
+            # Only include fields that are provided
+            allowed_fields = {
+                "name",
+                "color",
+                "is_favorite",
+            }
+            payload = {k: v for k, v in kwargs.items() if k in allowed_fields}
+
+            if not payload:
+                self.logger.warning("No valid fields provided for project update")
+                return False
+
+            self._make_request("POST", f"/projects/{project_id}", json=payload)
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to update project {project_id}: {e}")
+            return False
+
+    def archive_project(self, project_id: str) -> bool:
+        """Archive a project."""
+        try:
+            self._make_request("DELETE", f"/projects/{project_id}")
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to archive project {project_id}: {e}")
             return False

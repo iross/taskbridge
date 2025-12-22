@@ -1,5 +1,6 @@
 """Configuration management for TaskBridge."""
 
+import os
 import subprocess
 import urllib.parse
 from pathlib import Path
@@ -84,7 +85,7 @@ class Config:
         except Exception:
             return False
 
-    def get_obsidian_vault_path(self) -> str | None:
+    def get_obsidian_vault_path(self) -> str | os.PathLike[str]:
         """Get Obsidian vault path."""
         return self.get("obsidian_vault_path")
 
@@ -120,6 +121,57 @@ class Config:
         self.set("obsidian_vault_path", str(vault_path_obj))
         self.set("obsidian_vault_name", vault_name)
 
+    def get_obsidian_projects(self) -> list[str]:
+        """Get list of existing Obsidian projects by scanning the vault."""
+        vault_path = self.get_obsidian_vault_path()
+        if not vault_path:
+            return []
+
+        projects_dir = Path(vault_path) / "10 Projects"
+        if not projects_dir.exists():
+            return []
+
+        # Get all subdirectories (excluding hidden ones)
+        projects = []
+        for item in projects_dir.iterdir():
+            if item.is_dir() and not item.name.startswith("."):
+                projects.append(item.name)
+
+        return sorted(projects)
+
+    def archive_obsidian_project(self, project_name: str) -> bool:
+        """Archive an Obsidian project by moving it to the Archive directory."""
+        vault_path = self.get_obsidian_vault_path()
+        if not vault_path:
+            raise ValueError("Obsidian vault path not configured")
+
+        projects_dir = Path(vault_path) / "10 Projects"
+        archive_dir = Path(vault_path) / "40 Archive"
+
+        source_path = projects_dir / project_name
+        dest_path = archive_dir / project_name
+
+        # Check if source exists
+        if not source_path.exists():
+            raise ValueError(f"Project '{project_name}' does not exist")
+
+        if not source_path.is_dir():
+            raise ValueError(f"'{project_name}' is not a directory")
+
+        # Create archive directory if it doesn't exist
+        archive_dir.mkdir(parents=True, exist_ok=True)
+
+        # Check if destination already exists
+        if dest_path.exists():
+            raise ValueError(f"Project '{project_name}' already exists in archive")
+
+        # Move the directory
+        import shutil
+
+        shutil.move(str(source_path), str(dest_path))
+
+        return True
+
     def create_project_directory(self, project_name: str) -> Path:
         """Create a project directory in the Obsidian vault."""
         vault_path = self.get_obsidian_vault_path()
@@ -140,7 +192,7 @@ class Config:
         task_title: str,
         client: str = "",
         status: str = "backlog",
-        tags: list = None,
+        tags: list | None = None,
     ) -> Path:
         """Create a task-specific note with frontmatter."""
         if tags is None:

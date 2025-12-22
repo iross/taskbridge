@@ -96,7 +96,7 @@ class Database:
 
             conn.commit()
 
-    def log_sync_action(self, action: str, details: dict[str, Any] = None) -> int:
+    def log_sync_action(self, action: str, details: dict[str, Any] | None = None) -> int | None:
         """Log a sync action."""
         details_json = json.dumps(details) if details else None
 
@@ -152,7 +152,7 @@ class Database:
             conn.commit()
             return cursor.rowcount
 
-    def create_todoist_note_mapping(self, mapping: TodoistNoteMapping) -> int:
+    def create_todoist_note_mapping(self, mapping: TodoistNoteMapping) -> int | None:
         """Create a new Todoist task to Obsidian note mapping."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute(

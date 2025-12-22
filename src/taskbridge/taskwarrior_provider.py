@@ -50,7 +50,7 @@ class IssueProvider(ABC):
         pass
 
     @abstractmethod
-    def authenticate(self, credentials: dict[str, Any]) -> bool:
+    def authenticate(self, _credentials: dict[str, Any]) -> bool:
         """Authenticate with the provider using given credentials."""
         pass
 
@@ -97,7 +97,7 @@ class TaskwarriorProvider(IssueProvider):
         """Return the provider name."""
         return "taskwarrior"
 
-    def authenticate(self, credentials: dict[str, Any]) -> bool:
+    def authenticate(self, _credentials: dict[str, Any]) -> bool:
         """Authenticate with Taskwarrior.
 
         For Taskwarrior, authentication is just verifying the CLI is available.
@@ -167,10 +167,7 @@ class TaskwarriorProvider(IssueProvider):
             tasks = self.api.get_tasks_by_project(project_id)
         else:
             # Get pending tasks by default, or all tasks if include_done is True
-            if include_done:
-                tasks = self.api.get_all_tasks()
-            else:
-                tasks = self.api.get_pending_tasks()
+            tasks = self.api.get_all_tasks() if include_done else self.api.get_pending_tasks()
 
         # Apply text search filter
         if query:

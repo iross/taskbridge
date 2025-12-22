@@ -186,7 +186,7 @@ def create_obsidian_note(
 ## Notes
 
 ## Tasks
-- [ ] 
+- [ ]
 
 ## Links
 """
@@ -308,7 +308,7 @@ def main():
         print_status("blue", "📝 No existing note found, creating new one...")
 
         # Create Obsidian note
-        note_path = create_obsidian_note(vault_path, project_name, task_description, task_uuid)
+        create_obsidian_note(vault_path, project_name, task_description, task_uuid)
 
         # Annotate taskwarrior task
         annotate_task(task_uuid, project_name, task_description, vault_name)

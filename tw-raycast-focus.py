@@ -124,7 +124,6 @@ def main():
 
     # Get active task
     task = get_active_task()
-    task_uuid = task["uuid"]
     task_description = task["description"]
     project_name = task.get("project", "Default")
 
