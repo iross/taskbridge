@@ -1,14 +1,17 @@
 """Main CLI entry point for TaskBridge."""
 
+import contextlib
 import subprocess
 import urllib.parse
+from datetime import datetime
 from pathlib import Path
 
 import typer
 
 from .config import config as config_manager
-from .database import TodoistNoteMapping, db
+from .database import TaskTimeTracking, TodoistNoteMapping, db
 from .todoist_api import TodoistAPI
+from .zeit_integration import TimeBlock, ZeitIntegration
 
 # Main app
 app = typer.Typer(
@@ -23,12 +26,14 @@ task_app = typer.Typer(help="Task management commands")
 project_app = typer.Typer(help="Project management commands")
 map_app = typer.Typer(help="Task-to-note mapping commands")
 sync_app = typer.Typer(help="Synchronization commands")
+time_app = typer.Typer(help="Time tracking commands")
 
 app.add_typer(config_app, name="config")
 app.add_typer(task_app, name="task")
 app.add_typer(project_app, name="project")
 app.add_typer(map_app, name="map")
 app.add_typer(sync_app, name="sync")
+app.add_typer(time_app, name="time")
 
 
 # ============================================================================
@@ -362,6 +367,17 @@ def task_done(
                 typer.echo("❌ Failed to mark task as complete in Todoist")
                 raise typer.Exit(1) from None
 
+        # Stop time tracking if active for this task
+        try:
+            tracking = db.get_tracking_by_task_id(task_id)
+            if tracking and not tracking.stopped_at:
+                typer.echo("\n⏱️  Stopping time tracking...")
+                success, duration = stop_tracking_internal(tracking)
+                if success and duration > 0:
+                    typer.echo(f"✅ Tracked {format_duration(duration)}")
+        except Exception as e:
+            typer.echo(f"⚠️  Warning: Could not stop time tracking: {e}")
+
         # Update Obsidian note if it exists
         mapping = db.get_todoist_note_by_task_id(task_id)
         if mapping:
@@ -513,6 +529,35 @@ def task_note(
                 typer.echo("⚠️  Failed to add comment (note still created)")
         except Exception as e:
             typer.echo(f"⚠️  Warning: Could not add comment: {e}")
+
+        # Auto-start time tracking
+        try:
+            typer.echo("\n⏱️  Starting time tracking...")
+
+            # Stop any active tracking first
+            active = db.get_active_tracking()
+            if active and active.todoist_task_id != task_id:
+                stop_tracking_internal(active)
+                typer.echo("   ⏹️  Stopped previous tracking")
+
+            # Start new tracking
+            zeit = ZeitIntegration()
+            zeit_project_name = sanitize_project_name(project_name)
+
+            zeit.start_tracking(note=task.content, project=zeit_project_name, task=task_id[:8])
+
+            db.create_tracking_record(
+                todoist_task_id=task_id,
+                project_name=zeit_project_name,
+                task_name=task.content,
+                started_at=datetime.now(),
+            )
+
+            api.create_comment(task_id, "⏱️ Started tracking time")
+            typer.echo("✅ Time tracking started")
+
+        except Exception as e:
+            typer.echo(f"⚠️  Warning: Could not start time tracking: {e}")
 
         # Open note if requested
         if open_note and config_manager.open_obsidian_note(project_name, note_path.name):
@@ -838,7 +883,8 @@ def map_update(
 
                 # Verify
                 updated = db.get_todoist_note_by_task_id(task_id)
-                typer.echo(f"✅ Verified new project ID: {updated.todoist_project_id}")
+                if updated:
+                    typer.echo(f"✅ Verified new project ID: {updated.todoist_project_id}")
             else:
                 typer.echo("❌ Failed to update mapping")
                 raise typer.Exit(1) from None
@@ -1091,6 +1137,311 @@ def sync_projects(
         typer.echo(f"   ❌ Failed: {failed_count}")
         typer.echo(f"   📋 Total: {len(projects_to_sync)}")
 
+    except Exception as e:
+        typer.echo(f"❌ Error: {e}")
+        raise typer.Exit(1) from None
+
+
+# ============================================================================
+# TIME TRACKING HELPER FUNCTIONS
+# ============================================================================
+
+
+def sanitize_project_name(name: str) -> str:
+    """Sanitize project name for zeit (remove emojis, special chars, normalize)."""
+    import re
+
+    # Remove emojis and special characters, keep alphanumeric and spaces
+    cleaned = re.sub(r"[^\w\s-]", "", name)
+    # Replace spaces with hyphens, lowercase, strip
+    cleaned = cleaned.strip().lower().replace(" ", "-")
+    # Remove multiple consecutive hyphens
+    cleaned = re.sub(r"-+", "-", cleaned)
+    # Remove leading/trailing hyphens
+    cleaned = cleaned.strip("-")
+
+    # If empty after cleaning, use a default
+    return cleaned if cleaned else "general"
+
+
+def format_duration(seconds: int) -> str:
+    """Format seconds as human-readable duration."""
+    if seconds == 0:
+        return "0m"
+
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+
+    if hours > 0:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m"
+
+
+def calculate_duration(block: TimeBlock) -> int:
+    """Calculate duration in seconds from zeit block."""
+    try:
+        start = datetime.fromisoformat(block.start.replace("Z", "+00:00"))
+        end_str = block.end.replace("Z", "+00:00")
+
+        # Check if end time is the zero time (tracking still active)
+        end = datetime.now() if "0001-01-01" in end_str else datetime.fromisoformat(end_str)
+
+        duration = (end - start).total_seconds()
+        return int(duration)
+    except Exception:
+        return 0
+
+
+def stop_tracking_internal(tracking: TaskTimeTracking, note: str | None = None) -> tuple[bool, int]:
+    """
+    Stop zeit tracking and update records.
+
+    Returns:
+        tuple[bool, int]: (success, duration_in_seconds)
+    """
+    try:
+        zeit = ZeitIntegration()
+
+        # Stop zeit tracking
+        zeit.stop_tracking(note=note)
+
+        # Get the most recent block to calculate duration
+        blocks = zeit.list_blocks(start="today")
+        duration = 0
+
+        if blocks:
+            # Find the most recent block
+            latest_block = blocks[-1]
+            duration = calculate_duration(latest_block)
+
+        # Update database
+        db.update_tracking_record(tracking, stopped_at=datetime.now())
+
+        # Add comment to Todoist if linked
+        if tracking.todoist_task_id and duration > 0:
+            try:
+                api = TodoistAPI()
+                formatted_time = format_duration(duration)
+                api.create_comment(tracking.todoist_task_id, f"⏱️ Tracked {formatted_time}")
+            except Exception:
+                pass  # Don't fail if comment fails
+
+        return True, duration
+
+    except Exception:
+        return False, 0
+
+
+# ============================================================================
+# TIME TRACKING COMMANDS
+# ============================================================================
+
+
+@time_app.command("start")
+def time_start(
+    task: str | None = typer.Option(None, "--task", "-t", help="Todoist task ID to link"),
+    note: str | None = typer.Option(None, "--note", "-n", help="Note/description for tracking"),
+):
+    """Start time tracking, optionally linked to a Todoist task."""
+    try:
+        zeit = ZeitIntegration()
+
+        # Check for active tracking
+        active = db.get_active_tracking()
+        if active:
+            # Auto-stop previous tracking
+            if active.todoist_task_id != task:
+                typer.echo(
+                    f"⏹️  Stopping previous tracking: {active.task_name} " f"({active.project_name})"
+                )
+                success, duration = stop_tracking_internal(active)
+                if success:
+                    typer.echo(f"   ✅ Tracked {format_duration(duration)}")
+            else:
+                typer.echo("⚠️  Already tracking this task")
+                return
+
+        # If task ID provided, link to Todoist
+        if task:
+            if not config_manager.get_todoist_token():
+                typer.echo("❌ Todoist not configured. Run 'taskbridge config todoist' first.")
+                raise typer.Exit(1) from None
+
+            api = TodoistAPI()
+            todoist_task = api.get_task(task)
+
+            if not todoist_task:
+                typer.echo(f"❌ Task {task} not found in Todoist")
+                raise typer.Exit(1) from None
+
+            # Get project name
+            project = api.get_project(todoist_task.project_id)
+            project_name = project.name if project else "Unknown"
+
+            # Check for project mapping
+            project_mapping = config_manager.get_todoist_project_mappings().get(
+                todoist_task.project_id
+            )
+            if project_mapping:
+                zeit_project_name = sanitize_project_name(project_mapping["folder"])
+            else:
+                zeit_project_name = sanitize_project_name(project_name)
+
+            # Use task content as note if not provided
+            if not note:
+                note = todoist_task.content
+
+            # Start zeit tracking
+            zeit.start_tracking(note=note, project=zeit_project_name, task=todoist_task.id[:8])
+
+            # Save to database
+            db.create_tracking_record(
+                todoist_task_id=task,
+                project_name=zeit_project_name,
+                task_name=todoist_task.content,
+                started_at=datetime.now(),
+            )
+
+            # Add comment to Todoist
+            with contextlib.suppress(Exception):
+                api.create_comment(task, "⏱️ Started tracking time")
+
+            typer.echo(f"▶️  Started tracking: {todoist_task.content}")
+            typer.echo(f"   📁 Project: {project_name}")
+            typer.echo(f"   🔗 Task ID: {task}")
+
+        else:
+            # Generic tracking without Todoist link
+            if not note:
+                note = typer.prompt("What are you working on?")
+
+            # Use a default project for generic tracking
+            zeit.start_tracking(note=note, project="taskbridge", task="general")
+            typer.echo(f"▶️  Started tracking: {note}")
+            typer.echo("   ℹ️  Use --task to link to a Todoist task")
+
+    except RuntimeError as e:
+        typer.echo(f"❌ Zeit error: {e}")
+        typer.echo("   Make sure zeit is installed: https://codeberg.org/mrus/zeit")
+        raise typer.Exit(1) from None
+    except Exception as e:
+        typer.echo(f"❌ Error: {e}")
+        raise typer.Exit(1) from None
+
+
+@time_app.command("stop")
+def time_stop(
+    note: str | None = typer.Option(None, "--note", "-n", help="Final note when stopping"),
+):
+    """Stop active time tracking."""
+    try:
+        # Check for active tracking
+        active = db.get_active_tracking()
+
+        if not active:
+            typer.echo("⚠️  No active tracking session")
+            return
+
+        typer.echo(f"⏹️  Stopping: {active.task_name} ({active.project_name})")
+
+        # Stop tracking
+        success, duration = stop_tracking_internal(active, note=note)
+
+        if success:
+            typer.echo(f"✅ Tracked {format_duration(duration)}")
+            if active.todoist_task_id:
+                typer.echo(f"   🔗 Linked to task: {active.todoist_task_id}")
+        else:
+            typer.echo("⚠️  Warning: Could not stop zeit tracking")
+
+    except Exception as e:
+        typer.echo(f"❌ Error: {e}")
+        raise typer.Exit(1) from None
+
+
+@time_app.command("list")
+def time_list(
+    project: str | None = typer.Option(None, "--project", "-p", help="Filter by project"),
+    days: int = typer.Option(7, "--days", "-d", help="Number of days to show"),
+):
+    """List recent time tracking blocks."""
+    try:
+        zeit = ZeitIntegration()
+
+        # Calculate start date
+        start_filter = f"{days} days ago" if days > 1 else "today"
+
+        # Get blocks
+        blocks = zeit.list_blocks(project=project, start=start_filter)
+
+        if not blocks:
+            typer.echo(f"No time blocks found in the last {days} days")
+            return
+
+        typer.echo(f"\n⏱️  Time Blocks (last {days} days):")
+        typer.echo("=" * 80)
+
+        for block in blocks[-20:]:  # Show last 20
+            duration = calculate_duration(block)
+            duration_str = format_duration(duration)
+
+            # Format start time
+            start_dt = datetime.fromisoformat(block.start.replace("Z", "+00:00"))
+            start_str = start_dt.strftime("%Y-%m-%d %H:%M")
+
+            # Check if still active
+            is_active = "0001-01-01" in block.end
+
+            status = "🔴 ACTIVE" if is_active else f"⏱️  {duration_str}"
+
+            typer.echo(f"\n{status} - {block.note}")
+            typer.echo(f"   📁 {block.project_sid}/{block.task_sid}")
+            typer.echo(f"   🕐 Started: {start_str}")
+            if not is_active:
+                end_dt = datetime.fromisoformat(block.end.replace("Z", "+00:00"))
+                end_str = end_dt.strftime("%Y-%m-%d %H:%M")
+                typer.echo(f"   🕐 Ended: {end_str}")
+
+        typer.echo()
+
+    except RuntimeError as e:
+        typer.echo(f"❌ Zeit error: {e}")
+        raise typer.Exit(1) from None
+    except Exception as e:
+        typer.echo(f"❌ Error: {e}")
+        raise typer.Exit(1) from None
+
+
+@time_app.command("stats")
+def time_stats(
+    project: str | None = typer.Option(None, "--project", "-p", help="Filter by project"),
+    period: str = typer.Option("week", "--period", help="Period: today, week, month"),
+):
+    """View time tracking statistics."""
+    try:
+        zeit = ZeitIntegration()
+
+        # Map period to zeit format
+        period_map = {"today": "today", "week": "this week", "month": "this month"}
+
+        start_filter = period_map.get(period, "this week")
+
+        # Get stats
+        stats = zeit.get_stats(project=project, start=start_filter)
+
+        if not stats:
+            typer.echo(f"No statistics available for {period}")
+            return
+
+        typer.echo(f"\n📊 Time Tracking Statistics ({period}):")
+        typer.echo("=" * 80)
+
+        # Display stats (the format depends on zeit's output)
+        typer.echo(f"\n{stats}")
+
+    except RuntimeError as e:
+        typer.echo(f"❌ Zeit error: {e}")
+        raise typer.Exit(1) from None
     except Exception as e:
         typer.echo(f"❌ Error: {e}")
         raise typer.Exit(1) from None
