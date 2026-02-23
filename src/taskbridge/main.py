@@ -3,7 +3,7 @@
 import contextlib
 import subprocess
 import urllib.parse
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import typer
@@ -437,6 +437,132 @@ def task_done(
         raise typer.Exit(1) from None
 
 
+@task_app.command("select")
+def task_select(
+    project: str | None = typer.Option(
+        None, "--project", "-p", help="Filter by project ID or name"
+    ),
+    label: str | None = typer.Option(None, "--label", "-l", help="Filter by label"),
+    filter_query: str | None = typer.Option(None, "--filter", "-f", help="Todoist filter query"),
+    limit: int = typer.Option(100, "--limit", help="Maximum tasks to display"),
+    without_notes: bool = typer.Option(
+        False, "--without-notes", help="Only show tasks without notes"
+    ),
+):
+    """Select a task using fzf and output its ID."""
+    if not config_manager.get_todoist_token():
+        typer.echo("❌ Todoist not configured. Run 'taskbridge config todoist' first.", err=True)
+        raise typer.Exit(1) from None
+
+    # Check if fzf is installed
+    fzf_check = subprocess.run(["which", "fzf"], capture_output=True)
+    if fzf_check.returncode != 0:
+        typer.echo("❌ fzf not found. Install it with: brew install fzf", err=True)
+        raise typer.Exit(1) from None
+
+    try:
+        api = TodoistAPI()
+
+        # If project is provided as name, try to find ID
+        actual_project_id = project
+        if project and not project.isdigit():
+            projects = api.get_projects()
+            matching = [p for p in projects if p.name.lower() == project.lower()]
+            actual_project_id = matching[0].id if matching else None
+
+        # Fetch tasks
+        all_tasks = api.get_tasks(
+            project_id=actual_project_id, label=label, filter_query=filter_query
+        )
+
+        # Filter out completed tasks
+        tasks = [t for t in all_tasks if not t.is_completed]
+
+        # Filter by notes if requested
+        if without_notes:
+            tasks_without_notes = []
+            for task in tasks:
+                existing_note = db.get_todoist_note_by_task_id(task.id)
+                if existing_note is None:
+                    tasks_without_notes.append(task)
+            tasks = tasks_without_notes
+
+        # Apply limit
+        tasks = tasks[:limit]
+
+        if not tasks:
+            typer.echo("No tasks found.", err=True)
+            raise typer.Exit(1) from None
+
+        # Format tasks for fzf: ID | Title | Project | Labels | Due
+        fzf_lines = []
+        project_cache = {}
+
+        for task in tasks:
+            # Get project name
+            project_name = ""
+            if task.project_id:
+                if task.project_id not in project_cache:
+                    project_obj = api.get_project(task.project_id)
+                    project_cache[task.project_id] = project_obj.name if project_obj else "Unknown"
+                project_name = project_cache[task.project_id]
+
+            # Get labels
+            labels_str = ", ".join(task.labels) if task.labels else ""
+
+            # Get due date
+            due_str = ""
+            if task.due:
+                due_str = task.due.get("date", "")
+
+            # Format line with all requested info (using simple separators, no emojis)
+            parts = [task.id, task.content]
+            if project_name:
+                parts.append(f"[{project_name}]")
+            if labels_str:
+                parts.append(f"({labels_str})")
+            if due_str:
+                parts.append(f"due:{due_str}")
+
+            line = " | ".join(parts)
+            fzf_lines.append(line)
+
+        # Pipe to fzf
+        fzf_input = "\n".join(fzf_lines)
+
+        # Run fzf with proper terminal access
+        # stdin gets the data, stdout captures selection, stderr shows UI
+        result = subprocess.run(
+            [
+                "fzf",
+                "--height",
+                "50%",
+                "--layout=reverse",
+                "--border",
+                "--prompt",
+                "Select task: ",
+            ],
+            input=fzf_input,
+            text=True,
+            stdout=subprocess.PIPE,
+        )
+
+        if result.returncode != 0:
+            # User cancelled
+            raise typer.Exit(1) from None
+
+        # Extract task ID (first field before |)
+        selected_line = result.stdout.strip()
+        task_id = selected_line.split("|")[0].strip()
+
+        # Output just the task ID
+        typer.echo(task_id)
+
+    except Exception as e:
+        typer.echo(f"❌ Error: {e}", err=True)
+        raise typer.Exit(1) from None
+
+
 @task_app.command("note")
 def task_note(
     task_id: str,
@@ -542,13 +668,13 @@ def task_note(
 
             # Start new tracking
             zeit = ZeitIntegration()
-            zeit_project_name = sanitize_project_name(project_name)
+            zeit_project, zeit_task = build_zeit_identifiers(project_name, client_name)
 
-            zeit.start_tracking(note=task.content, project=zeit_project_name, task=task_id[:8])
+            zeit.start_tracking(note=task.content, project=zeit_project, task=zeit_task)
 
             db.create_tracking_record(
                 todoist_task_id=task_id,
-                project_name=zeit_project_name,
+                project_name=zeit_project,
                 task_name=task.content,
                 started_at=datetime.now(),
             )
@@ -1164,6 +1290,27 @@ def sanitize_project_name(name: str) -> str:
     return cleaned if cleaned else "general"
 
 
+def build_zeit_identifiers(project: str, client: str = "") -> tuple[str, str]:
+    """Build zeit project and task identifiers from client/project names.
+
+    Maps the client to zeit's project level and the project to zeit's task level,
+    so that projects are grouped under their client in zeit (client/project).
+
+    Args:
+        project: Project name (becomes the zeit task)
+        client: Client name (becomes the zeit project, optional)
+
+    Returns:
+        Tuple of (zeit_project, zeit_task) e.g. ("path", "nairr-tutorial")
+        If no client, returns (sanitized project, "general")
+    """
+    sanitized_project = sanitize_project_name(project)
+    if client:
+        sanitized_client = sanitize_project_name(client)
+        return sanitized_client, sanitized_project
+    return sanitized_project, "general"
+
+
 def format_duration(seconds: int) -> str:
     """Format seconds as human-readable duration."""
     if seconds == 0:
@@ -1184,7 +1331,7 @@ def calculate_duration(block: TimeBlock) -> int:
         end_str = block.end.replace("Z", "+00:00")
 
         # Check if end time is the zero time (tracking still active)
-        end = datetime.now() if "0001-01-01" in end_str else datetime.fromisoformat(end_str)
+        end = datetime.now(UTC) if "0001-01-01" in end_str else datetime.fromisoformat(end_str)
 
         duration = (end - start).total_seconds()
         return int(duration)
@@ -1252,7 +1399,7 @@ def time_start(
             # Auto-stop previous tracking
             if active.todoist_task_id != task:
                 typer.echo(
-                    f"⏹️  Stopping previous tracking: {active.task_name} " f"({active.project_name})"
+                    f"⏹️  Stopping previous tracking: {active.task_name} ({active.project_name})"
                 )
                 success, duration = stop_tracking_internal(active)
                 if success:
@@ -1283,21 +1430,24 @@ def time_start(
                 todoist_task.project_id
             )
             if project_mapping:
-                zeit_project_name = sanitize_project_name(project_mapping["folder"])
+                zeit_project, zeit_task = build_zeit_identifiers(
+                    project_mapping["folder"], project_mapping.get("client", "")
+                )
             else:
-                zeit_project_name = sanitize_project_name(project_name)
+                zeit_project = sanitize_project_name(project_name)
+                zeit_task = "general"
 
             # Use task content as note if not provided
             if not note:
                 note = todoist_task.content
 
             # Start zeit tracking
-            zeit.start_tracking(note=note, project=zeit_project_name, task=todoist_task.id[:8])
+            zeit.start_tracking(note=note, project=zeit_project, task=zeit_task)
 
             # Save to database
             db.create_tracking_record(
                 todoist_task_id=task,
-                project_name=zeit_project_name,
+                project_name=zeit_project,
                 task_name=todoist_task.content,
                 started_at=datetime.now(),
             )
@@ -1307,7 +1457,7 @@ def time_start(
                 api.create_comment(task, "⏱️ Started tracking time")
 
             typer.echo(f"▶️  Started tracking: {todoist_task.content}")
-            typer.echo(f"   📁 Project: {project_name}")
+            typer.echo(f"   📁 Project: {zeit_project}/{zeit_task}")
             typer.echo(f"   🔗 Task ID: {task}")
 
         else:

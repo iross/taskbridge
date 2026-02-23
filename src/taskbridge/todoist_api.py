@@ -58,7 +58,7 @@ class TodoistTask:
 class TodoistAPI:
     """Todoist API client."""
 
-    BASE_URL = "https://api.todoist.com/rest/v2"
+    BASE_URL = "https://api.todoist.com/api/v1"
 
     def __init__(self, token: str | None = None):
         self.token = token or config_manager.get_todoist_token()
@@ -103,6 +103,26 @@ class TodoistAPI:
             self.logger.error(f"Failed to parse JSON response: {e}")
             raise
 
+    def _get_paginated(self, endpoint: str, params: dict | None = None) -> list[Any]:
+        """Fetch all pages from a paginated list endpoint.
+
+        API v1 list endpoints return {"results": [...], "next_cursor": "..."}.
+        """
+        params = dict(params or {})
+        all_results: list[Any] = []
+
+        while True:
+            data = self._make_request("GET", endpoint, params=params)
+            if data is None:
+                break
+            all_results.extend(data.get("results", []))
+            cursor = data.get("next_cursor")
+            if not cursor:
+                break
+            params["cursor"] = cursor
+
+        return all_results
+
     def validate_token(self, token: str | None = None) -> bool:
         """Validate Todoist API token."""
         test_token = token or self.token
@@ -117,7 +137,7 @@ class TodoistAPI:
     def get_projects(self) -> list[TodoistProject]:
         """Get all projects."""
         try:
-            data = self._make_request("GET", "/projects")
+            data = self._get_paginated("/projects")
             projects = []
             for project_data in data:
                 projects.append(
@@ -213,18 +233,21 @@ class TodoistAPI:
         label: str | None = None,
         filter_query: str | None = None,
     ) -> list[TodoistTask]:
-        """Get tasks with optional filtering."""
+        """Get tasks with optional filtering.
+
+        filter_query uses Todoist's filter language and routes to /tasks/filter.
+        """
         try:
-            params = {}
-
-            if project_id:
-                params["project_id"] = project_id
-            if label:
-                params["label"] = label
             if filter_query:
-                params["filter"] = filter_query
-
-            data = self._make_request("GET", "/tasks", params=params)
+                # Filter queries use a dedicated endpoint in API v1
+                data = self._get_paginated("/tasks/filter", {"query": filter_query})
+            else:
+                params: dict[str, Any] = {}
+                if project_id:
+                    params["project_id"] = project_id
+                if label:
+                    params["label"] = label
+                data = self._get_paginated("/tasks", params)
             tasks = []
 
             for task_data in data:
