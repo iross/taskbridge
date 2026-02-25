@@ -1271,8 +1271,8 @@ def sanitize_project_name(name: str) -> str:
 
     # Remove emojis and special characters, keep alphanumeric and spaces
     cleaned = re.sub(r"[^\w\s-]", "", name)
-    # Replace spaces with hyphens, lowercase, strip
-    cleaned = cleaned.strip().lower().replace(" ", "-")
+    # Replace spaces with hyphens, strip
+    cleaned = cleaned.strip().replace(" ", "-")
     # Remove multiple consecutive hyphens
     cleaned = re.sub(r"-+", "-", cleaned)
     # Remove leading/trailing hyphens

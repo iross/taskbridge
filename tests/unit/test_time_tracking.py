@@ -274,7 +274,7 @@ class TestHelperFunctions:
 
         result = sanitize_project_name("My Project")
 
-        assert result == "my-project"
+        assert result == "My-Project"
 
     def test_sanitize_project_name_with_emojis(self):
         """Test sanitizing project name with emojis."""
@@ -283,7 +283,7 @@ class TestHelperFunctions:
         result = sanitize_project_name("🌲 🦨 Project")
 
         # Emojis should be removed
-        assert result == "project"
+        assert result == "Project"
 
     def test_sanitize_project_name_with_special_chars(self):
         """Test sanitizing project name with special characters."""
@@ -291,7 +291,7 @@ class TestHelperFunctions:
 
         result = sanitize_project_name("Test@#$%Project!")
 
-        assert result == "testproject"
+        assert result == "TestProject"
 
     def test_sanitize_project_name_multiple_spaces(self):
         """Test sanitizing project name with multiple spaces."""
@@ -300,7 +300,7 @@ class TestHelperFunctions:
         result = sanitize_project_name("My   Big   Project")
 
         # Multiple spaces should become single hyphen
-        assert result == "my-big-project"
+        assert result == "My-Big-Project"
 
     def test_sanitize_project_name_already_clean(self):
         """Test sanitizing already clean project name."""
@@ -325,7 +325,7 @@ class TestHelperFunctions:
 
         result = build_bartib_project("My Project", "Acme Corp")
 
-        assert result == "acme-corp::my-project"
+        assert result == "Acme-Corp::My-Project"
 
     def test_build_bartib_project_without_client(self):
         """Test building bartib project name without client."""
@@ -333,7 +333,7 @@ class TestHelperFunctions:
 
         result = build_bartib_project("My Project")
 
-        assert result == "my-project"
+        assert result == "My-Project"
 
     def test_build_bartib_project_with_tags(self):
         """Test building bartib project name with tags."""
@@ -341,7 +341,7 @@ class TestHelperFunctions:
 
         result = build_bartib_project("My Project", "Acme Corp", tags=["work", "urgent"])
 
-        assert result == "acme-corp::my-project::work,urgent"
+        assert result == "Acme-Corp::My-Project::work,urgent"
 
     def test_build_bartib_project_with_tags_no_client(self):
         """Test building bartib project name with tags but no client."""
@@ -349,7 +349,7 @@ class TestHelperFunctions:
 
         result = build_bartib_project("My Project", tags=["billable"])
 
-        assert result == "my-project::billable"
+        assert result == "My-Project::billable"
 
     def test_build_bartib_project_no_tags(self):
         """Test building bartib project name with empty tags list."""
@@ -357,7 +357,7 @@ class TestHelperFunctions:
 
         result = build_bartib_project("My Project", "Client", tags=[])
 
-        assert result == "client::my-project"
+        assert result == "Client::My-Project"
 
 
 class TestStopTrackingInternal:
