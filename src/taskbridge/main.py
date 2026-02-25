@@ -3,6 +3,7 @@
 import contextlib
 import subprocess
 import urllib.parse
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -1361,6 +1362,91 @@ def format_duration(seconds: int) -> str:
     return f"{minutes}m"
 
 
+def parse_project_segments(project_name: str) -> tuple[str, str]:
+    """Split a bartib project string into (client, project).
+
+    Tags (third segment onward) are ignored for grouping purposes.
+    Projects with no '::' separator are returned as ('(other)', project_name).
+    """
+    parts = project_name.split("::")
+    if len(parts) == 1:
+        return "(other)", parts[0]
+    return parts[0], parts[1]
+
+
+@dataclass
+class ReportEntry:
+    """A single time-tracked entry for the report."""
+
+    client: str
+    project: str
+    description: str
+    seconds: int
+
+
+def build_report_entries(records: list[TaskTimeTracking], now: datetime) -> list[ReportEntry]:
+    """Convert tracking records into flat report entries, crediting active sessions to now."""
+    entries = []
+    for record in records:
+        start = record.started_at
+        if start is None:
+            continue
+        end = record.stopped_at if record.stopped_at else now
+        seconds = max(0, int((end - start).total_seconds()))
+        if seconds == 0:
+            continue
+        client, project = parse_project_segments(record.project_name)
+        entries.append(
+            ReportEntry(
+                client=client,
+                project=project,
+                description=record.task_name,
+                seconds=seconds,
+            )
+        )
+    return entries
+
+
+def format_report(entries: list[ReportEntry]) -> str:
+    """Format report entries into a hierarchical text report."""
+    if not entries:
+        return "No tracked time found for this period."
+
+    total_seconds = sum(e.seconds for e in entries)
+
+    # Aggregate: client → project → list of (description, seconds)
+    from collections import defaultdict
+
+    client_seconds: dict[str, int] = defaultdict(int)
+    project_seconds: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    project_descriptions: dict[str, dict[str, list[str]]] = defaultdict(lambda: defaultdict(list))
+
+    for entry in entries:
+        client_seconds[entry.client] += entry.seconds
+        project_seconds[entry.client][entry.project] += entry.seconds
+        if entry.description not in project_descriptions[entry.client][entry.project]:
+            project_descriptions[entry.client][entry.project].append(entry.description)
+
+    total_hours = total_seconds / 3600
+    lines = [f"Total: {total_hours:.1f}h\n"]
+
+    for client in sorted(client_seconds, key=lambda c: client_seconds[c], reverse=True):
+        c_secs = client_seconds[client]
+        c_frac = c_secs / total_seconds
+        lines.append(f"{client}  {c_frac:.2f}")
+
+        for project in sorted(
+            project_seconds[client], key=lambda p: project_seconds[client][p], reverse=True
+        ):
+            p_secs = project_seconds[client][project]
+            p_frac = p_secs / c_secs
+            lines.append(f"  - {project}: {p_frac:.2f}")
+            for desc in project_descriptions[client][project]:
+                lines.append(f"    - {desc}")
+
+    return "\n".join(lines)
+
+
 def stop_tracking_internal(tracking: TaskTimeTracking) -> tuple[bool, int]:
     """Stop bartib tracking and update records.
 
@@ -1544,6 +1630,47 @@ def time_list(
         raise typer.Exit(1) from None
     except Exception as e:
         typer.echo(f"❌ Error: {e}")
+        raise typer.Exit(1) from None
+
+
+@time_app.command("report")
+def time_report(
+    date: str | None = typer.Option(None, "--date", help="Report for a specific date (YYYY-MM-DD)"),
+    from_date: str | None = typer.Option(None, "--from", help="Start date (YYYY-MM-DD)"),
+    to_date: str | None = typer.Option(None, "--to", help="End date (YYYY-MM-DD, inclusive)"),
+):
+    """Daily summary report grouped by client and project."""
+    from datetime import timedelta
+
+    try:
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+
+        if from_date or to_date:
+            start = datetime.strptime(from_date, "%Y-%m-%d") if from_date else today
+            end_day = datetime.strptime(to_date, "%Y-%m-%d") if to_date else today
+        elif date:
+            start = datetime.strptime(date, "%Y-%m-%d")
+            end_day = start
+        else:
+            start = today
+            end_day = today
+
+        end = end_day + timedelta(days=1)  # exclusive upper bound
+        label = (
+            start.strftime("%Y-%m-%d")
+            if start == end_day
+            else (f"{start.strftime('%Y-%m-%d')} – {end_day.strftime('%Y-%m-%d')}")
+        )
+
+        records = db.get_tracking_in_range(start, end)
+        entries = build_report_entries(records, now=datetime.now())
+        report = format_report(entries)
+
+        typer.echo(f"Report: {label}\n")
+        typer.echo(report)
+
+    except ValueError as e:
+        typer.echo(f"❌ Invalid date: {e}")
         raise typer.Exit(1) from None
 
 

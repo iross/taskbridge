@@ -429,6 +429,43 @@ class Database:
                 )
             return records
 
+    def get_tracking_in_range(self, from_dt: datetime, to_dt: datetime) -> list[TaskTimeTracking]:
+        """Get all tracking records that started within [from_dt, to_dt)."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(
+                """
+                SELECT * FROM task_time_tracking
+                WHERE started_at >= ? AND started_at < ?
+                ORDER BY started_at ASC
+                """,
+                (from_dt.isoformat(), to_dt.isoformat()),
+            )
+
+            records = []
+            for row in cursor.fetchall():
+                records.append(
+                    TaskTimeTracking(
+                        id=row["id"],
+                        todoist_task_id=row["todoist_task_id"],
+                        project_name=row["project_name"],
+                        task_name=row["task_name"],
+                        started_at=datetime.fromisoformat(row["started_at"])
+                        if row["started_at"]
+                        else None,
+                        stopped_at=datetime.fromisoformat(row["stopped_at"])
+                        if row["stopped_at"]
+                        else None,
+                        created_at=datetime.fromisoformat(row["created_at"])
+                        if row["created_at"]
+                        else None,
+                        updated_at=datetime.fromisoformat(row["updated_at"])
+                        if row["updated_at"]
+                        else None,
+                    )
+                )
+            return records
+
     def update_tracking_record(
         self, tracking: TaskTimeTracking, stopped_at: datetime | None = None
     ) -> bool:
