@@ -590,20 +590,10 @@ def task_note(
 
         typer.echo(f"Task: {task.content}")
 
-        # Get project info
-        project = api.get_project(task.project_id)
-        project_name_todoist = project.name if project else "Todoist"
-
-        # Check for project mapping
-        project_mapping = config_manager.get_todoist_project_mappings().get(task.project_id)
-        if project_mapping:
-            project_name = project_mapping["folder"]
-            client_name = project_mapping.get("client", "")
-            typer.echo(f"Using mapped project: {project_name}")
-        else:
-            project_name = project_name_todoist
-            client_name = ""
-            typer.echo(f"Using Todoist project name: {project_name}")
+        # Get project info (manual mapping → hierarchy inference)
+        project_name, client_name = resolve_project_info(task.project_id, api)
+        suffix = f" (client: {client_name})" if client_name else ""
+        typer.echo(f"Project: {project_name}{suffix}")
 
         # Create the note
         typer.echo(f"\n📝 Creating note in {project_name}...")
@@ -1292,6 +1282,37 @@ def sanitize_project_name(name: str) -> str:
     return cleaned if cleaned else "general"
 
 
+def resolve_project_info(project_id: str, api: "TodoistAPI") -> tuple[str, str]:
+    """Return (project_name, client_name) for a Todoist project.
+
+    Manual config mappings take precedence. Otherwise the top-level ancestor
+    in the project hierarchy becomes the client and the direct project becomes
+    the folder name.
+    """
+    manual = config_manager.get_todoist_project_mappings().get(project_id)
+    if manual:
+        return manual["folder"], manual.get("client", "")
+
+    project = api.get_project(project_id)
+    if not project:
+        return "Unknown", ""
+
+    if not project.parent_id:
+        return project.name, ""
+
+    # Walk up to the root ancestor — that becomes the client
+    current = project
+    client_name = project.name
+    while current.parent_id:
+        parent = api.get_project(current.parent_id)
+        if not parent:
+            break
+        client_name = parent.name
+        current = parent
+
+    return project.name, client_name
+
+
 def build_bartib_project(project: str, client: str = "", tags: list[str] | None = None) -> str:
     """Build bartib project name encoding client, project, and tags.
 
@@ -1403,22 +1424,11 @@ def time_start(
                 typer.echo(f"❌ Task {task} not found in Todoist")
                 raise typer.Exit(1) from None
 
-            # Get project name
-            project_obj = api.get_project(todoist_task.project_id)
-            project_name = project_obj.name if project_obj else "Unknown"
-
-            # Check for project mapping
-            project_mapping = config_manager.get_todoist_project_mappings().get(
-                todoist_task.project_id
+            # Get project name (manual mapping → hierarchy inference)
+            project_name, client_name = resolve_project_info(todoist_task.project_id, api)
+            bartib_project = build_bartib_project(
+                project_name, client_name, tags=todoist_task.labels
             )
-            if project_mapping:
-                bartib_project = build_bartib_project(
-                    project_mapping["folder"],
-                    project_mapping.get("client", ""),
-                    tags=todoist_task.labels,
-                )
-            else:
-                bartib_project = build_bartib_project(project_name, tags=todoist_task.labels)
 
             # Use task content as description if not provided
             if not note:
