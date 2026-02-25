@@ -6,7 +6,6 @@ from unittest.mock import patch
 import pytest
 
 from taskbridge.database import Database, TaskTimeTracking
-from taskbridge.zeit_integration import TimeBlock
 
 
 @pytest.fixture
@@ -22,7 +21,6 @@ def sample_tracking_record():
     return TaskTimeTracking(
         id=1,
         todoist_task_id="task-123",
-        zeit_block_key="block:abc123",
         project_name="taskbridge",
         task_name="Test Task",
         started_at=datetime(2026, 1, 8, 10, 0, 0),
@@ -48,17 +46,6 @@ class TestCreateTrackingRecord:
 
         assert record_id is not None
         assert record_id > 0
-
-    def test_create_tracking_record_with_zeit_key(self, test_db):
-        """Test creating tracking record with zeit block key."""
-        record_id = test_db.create_tracking_record(
-            todoist_task_id="task-456",
-            project_name="project",
-            task_name="Task",
-            zeit_block_key="block:xyz789",
-        )
-
-        assert record_id is not None
 
     def test_create_tracking_record_auto_timestamp(self, test_db):
         """Test that started_at defaults to now if not provided."""
@@ -281,82 +268,6 @@ class TestHelperFunctions:
 
         assert result == "1h 15m"
 
-    def test_calculate_duration_normal_block(self):
-        """Test calculating duration from a completed time block."""
-        from taskbridge.main import calculate_duration
-
-        block = TimeBlock(
-            key="block:123",
-            project_sid="proj",
-            task_sid="task",
-            note="Test",
-            start="2026-01-08T10:00:00-06:00",
-            end="2026-01-08T11:30:00-06:00",
-            duration=0,
-        )
-
-        duration = calculate_duration(block)
-
-        # 1.5 hours = 5400 seconds
-        assert duration == 5400
-
-    def test_calculate_duration_active_block(self):
-        """Test calculating duration for active (ongoing) block."""
-        from taskbridge.main import calculate_duration
-
-        # Active block has zero time as end
-        block = TimeBlock(
-            key="block:123",
-            project_sid="proj",
-            task_sid="task",
-            note="Test",
-            start="2026-01-08T10:00:00-06:00",
-            end="0001-01-01T00:00:00Z",
-            duration=0,
-        )
-
-        duration = calculate_duration(block)
-
-        # Should calculate from start to now
-        assert duration > 0
-
-    def test_calculate_duration_handles_timezone(self):
-        """Test that duration calculation handles timezones."""
-        from taskbridge.main import calculate_duration
-
-        block = TimeBlock(
-            key="block:123",
-            project_sid="proj",
-            task_sid="task",
-            note="Test",
-            start="2026-01-08T10:00:00Z",  # UTC
-            end="2026-01-08T11:00:00Z",
-            duration=0,
-        )
-
-        duration = calculate_duration(block)
-
-        assert duration == 3600
-
-    def test_calculate_duration_handles_errors(self):
-        """Test that duration calculation handles invalid times gracefully."""
-        from taskbridge.main import calculate_duration
-
-        block = TimeBlock(
-            key="block:123",
-            project_sid="proj",
-            task_sid="task",
-            note="Test",
-            start="invalid-time",
-            end="invalid-time",
-            duration=0,
-        )
-
-        duration = calculate_duration(block)
-
-        # Should return 0 on error
-        assert duration == 0
-
     def test_sanitize_project_name_basic(self):
         """Test sanitizing basic project name."""
         from taskbridge.main import sanitize_project_name
@@ -408,91 +319,114 @@ class TestHelperFunctions:
         # Should default to "general"
         assert result == "general"
 
+    def test_build_bartib_project_with_client(self):
+        """Test building bartib project name with client."""
+        from taskbridge.main import build_bartib_project
+
+        result = build_bartib_project("My Project", "Acme Corp")
+
+        assert result == "acme-corp::my-project"
+
+    def test_build_bartib_project_without_client(self):
+        """Test building bartib project name without client."""
+        from taskbridge.main import build_bartib_project
+
+        result = build_bartib_project("My Project")
+
+        assert result == "my-project"
+
+    def test_build_bartib_project_with_tags(self):
+        """Test building bartib project name with tags."""
+        from taskbridge.main import build_bartib_project
+
+        result = build_bartib_project("My Project", "Acme Corp", tags=["work", "urgent"])
+
+        assert result == "acme-corp::my-project::work,urgent"
+
+    def test_build_bartib_project_with_tags_no_client(self):
+        """Test building bartib project name with tags but no client."""
+        from taskbridge.main import build_bartib_project
+
+        result = build_bartib_project("My Project", tags=["billable"])
+
+        assert result == "my-project::billable"
+
+    def test_build_bartib_project_no_tags(self):
+        """Test building bartib project name with empty tags list."""
+        from taskbridge.main import build_bartib_project
+
+        result = build_bartib_project("My Project", "Client", tags=[])
+
+        assert result == "client::my-project"
+
 
 class TestStopTrackingInternal:
     """Test stop_tracking_internal helper function."""
 
-    @patch("taskbridge.main.ZeitIntegration")
+    @patch("taskbridge.main.BartibIntegration")
     @patch("taskbridge.main.TodoistAPI")
     @patch("taskbridge.main.db")
-    def test_stop_tracking_internal_success(self, mock_db, mock_api_class, mock_zeit_class):
+    def test_stop_tracking_internal_success(self, mock_db, mock_api_class, mock_bartib_class):
         """Test successful stop tracking internal."""
         from taskbridge.main import stop_tracking_internal
 
-        # Setup mocks
-        mock_zeit = mock_zeit_class.return_value
-        mock_zeit.list_blocks.return_value = [
-            TimeBlock(
-                key="block:123",
-                project_sid="proj",
-                task_sid="task",
-                note="Test",
-                start="2026-01-08T10:00:00-06:00",
-                end="2026-01-08T11:00:00-06:00",
-                duration=0,
-            )
-        ]
+        started = datetime(2026, 1, 8, 10, 0, 0)
+        stopped = datetime(2026, 1, 8, 11, 0, 0)
 
         tracking = TaskTimeTracking(
             id=1,
             todoist_task_id="task-123",
             project_name="proj",
             task_name="Test",
-            started_at=datetime(2026, 1, 8, 10, 0, 0),
+            started_at=started,
         )
 
-        success, duration = stop_tracking_internal(tracking)
+        with patch("taskbridge.main.datetime") as mock_dt:
+            mock_dt.now.return_value = stopped
+            success, duration = stop_tracking_internal(tracking)
 
         assert success is True
         assert duration == 3600  # 1 hour
-        mock_zeit.stop_tracking.assert_called_once()
+        mock_bartib_class.return_value.stop_tracking.assert_called_once_with()
         mock_db.update_tracking_record.assert_called_once()
 
-    @patch("taskbridge.main.ZeitIntegration")
+    @patch("taskbridge.main.BartibIntegration")
     @patch("taskbridge.main.db")
-    def test_stop_tracking_internal_adds_todoist_comment(self, mock_db, mock_zeit_class):
+    def test_stop_tracking_internal_adds_todoist_comment(self, mock_db, mock_bartib_class):
         """Test that Todoist comment is added with duration."""
         from taskbridge.main import stop_tracking_internal
 
-        mock_zeit = mock_zeit_class.return_value
-        mock_zeit.list_blocks.return_value = [
-            TimeBlock(
-                key="block:123",
-                project_sid="proj",
-                task_sid="task",
-                note="Test",
-                start="2026-01-08T10:00:00-06:00",
-                end="2026-01-08T12:30:00-06:00",  # 2.5 hours
-                duration=0,
-            )
-        ]
+        started = datetime(2026, 1, 8, 10, 0, 0)
+        stopped = datetime(2026, 1, 8, 12, 30, 0)  # 2.5 hours
 
         tracking = TaskTimeTracking(
             id=1,
             todoist_task_id="task-123",
             project_name="proj",
             task_name="Test",
-            started_at=datetime(2026, 1, 8, 10, 0, 0),
+            started_at=started,
         )
 
-        with patch("taskbridge.main.TodoistAPI") as mock_api_class:
-            mock_api = mock_api_class.return_value
-            success, duration = stop_tracking_internal(tracking)
+        with patch("taskbridge.main.datetime") as mock_dt:
+            mock_dt.now.return_value = stopped
+            with patch("taskbridge.main.TodoistAPI") as mock_api_class:
+                mock_api = mock_api_class.return_value
+                success, duration = stop_tracking_internal(tracking)
 
-            # Should add comment with formatted duration (2h 30m)
-            mock_api.create_comment.assert_called_once()
-            call_args = mock_api.create_comment.call_args
-            assert "task-123" in call_args[0]
-            assert "2h 30m" in call_args[0][1]
+                # Should add comment with formatted duration (2h 30m)
+                mock_api.create_comment.assert_called_once()
+                call_args = mock_api.create_comment.call_args
+                assert "task-123" in call_args[0]
+                assert "2h 30m" in call_args[0][1]
 
-    @patch("taskbridge.main.ZeitIntegration")
+    @patch("taskbridge.main.BartibIntegration")
     @patch("taskbridge.main.db")
-    def test_stop_tracking_internal_handles_errors(self, mock_db, mock_zeit_class):
+    def test_stop_tracking_internal_handles_errors(self, mock_db, mock_bartib_class):
         """Test that errors are handled gracefully."""
         from taskbridge.main import stop_tracking_internal
 
-        # Make zeit raise an error
-        mock_zeit_class.side_effect = Exception("Zeit failed")
+        # Make bartib raise an error
+        mock_bartib_class.side_effect = Exception("Bartib failed")
 
         tracking = TaskTimeTracking(
             id=1,

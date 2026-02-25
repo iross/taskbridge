@@ -3,15 +3,15 @@
 import contextlib
 import subprocess
 import urllib.parse
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 
 import typer
 
+from .bartib_integration import BartibIntegration
 from .config import config as config_manager
 from .database import TaskTimeTracking, TodoistNoteMapping, db
 from .todoist_api import TodoistAPI
-from .zeit_integration import TimeBlock, ZeitIntegration
 
 # Main app
 app = typer.Typer(
@@ -667,14 +667,14 @@ def task_note(
                 typer.echo("   ⏹️  Stopped previous tracking")
 
             # Start new tracking
-            zeit = ZeitIntegration()
-            zeit_project, zeit_task = build_zeit_identifiers(project_name, client_name)
+            bartib = BartibIntegration()
+            bartib_project = build_bartib_project(project_name, client_name, tags=task.labels)
 
-            zeit.start_tracking(note=task.content, project=zeit_project, task=zeit_task)
+            bartib.start_tracking(description=task.content, project=bartib_project)
 
             db.create_tracking_record(
                 todoist_task_id=task_id,
-                project_name=zeit_project,
+                project_name=bartib_project,
                 task_name=task.content,
                 started_at=datetime.now(),
             )
@@ -1274,7 +1274,7 @@ def sync_projects(
 
 
 def sanitize_project_name(name: str) -> str:
-    """Sanitize project name for zeit (remove emojis, special chars, normalize)."""
+    """Sanitize project name (remove emojis, special chars, normalize)."""
     import re
 
     # Remove emojis and special characters, keep alphanumeric and spaces
@@ -1290,25 +1290,26 @@ def sanitize_project_name(name: str) -> str:
     return cleaned if cleaned else "general"
 
 
-def build_zeit_identifiers(project: str, client: str = "") -> tuple[str, str]:
-    """Build zeit project and task identifiers from client/project names.
+def build_bartib_project(project: str, client: str = "", tags: list[str] | None = None) -> str:
+    """Build bartib project name encoding client, project, and tags.
 
-    Maps the client to zeit's project level and the project to zeit's task level,
-    so that projects are grouped under their client in zeit (client/project).
+    Format: "client::project::tag1,tag2" (client and tags are optional)
 
     Args:
-        project: Project name (becomes the zeit task)
-        client: Client name (becomes the zeit project, optional)
+        project: Project name
+        client: Client name (optional)
+        tags: Task labels/tags (optional)
 
     Returns:
-        Tuple of (zeit_project, zeit_task) e.g. ("path", "nairr-tutorial")
-        If no client, returns (sanitized project, "general")
+        Bartib project string, e.g. "acme-corp::my-project::work,urgent"
     """
-    sanitized_project = sanitize_project_name(project)
+    parts = []
     if client:
-        sanitized_client = sanitize_project_name(client)
-        return sanitized_client, sanitized_project
-    return sanitized_project, "general"
+        parts.append(sanitize_project_name(client))
+    parts.append(sanitize_project_name(project))
+    if tags:
+        parts.append(",".join(sanitize_project_name(t) for t in tags))
+    return "::".join(parts)
 
 
 def format_duration(seconds: int) -> str:
@@ -1324,45 +1325,24 @@ def format_duration(seconds: int) -> str:
     return f"{minutes}m"
 
 
-def calculate_duration(block: TimeBlock) -> int:
-    """Calculate duration in seconds from zeit block."""
-    try:
-        start = datetime.fromisoformat(block.start.replace("Z", "+00:00"))
-        end_str = block.end.replace("Z", "+00:00")
-
-        # Check if end time is the zero time (tracking still active)
-        end = datetime.now(UTC) if "0001-01-01" in end_str else datetime.fromisoformat(end_str)
-
-        duration = (end - start).total_seconds()
-        return int(duration)
-    except Exception:
-        return 0
-
-
-def stop_tracking_internal(tracking: TaskTimeTracking, note: str | None = None) -> tuple[bool, int]:
-    """
-    Stop zeit tracking and update records.
+def stop_tracking_internal(tracking: TaskTimeTracking) -> tuple[bool, int]:
+    """Stop bartib tracking and update records.
 
     Returns:
         tuple[bool, int]: (success, duration_in_seconds)
     """
     try:
-        zeit = ZeitIntegration()
+        bartib = BartibIntegration()
+        bartib.stop_tracking()
 
-        # Stop zeit tracking
-        zeit.stop_tracking(note=note)
-
-        # Get the most recent block to calculate duration
-        blocks = zeit.list_blocks(start="today")
+        # Calculate duration from started_at stored in database
+        stopped_at = datetime.now()
         duration = 0
-
-        if blocks:
-            # Find the most recent block
-            latest_block = blocks[-1]
-            duration = calculate_duration(latest_block)
+        if tracking.started_at:
+            duration = int((stopped_at - tracking.started_at).total_seconds())
 
         # Update database
-        db.update_tracking_record(tracking, stopped_at=datetime.now())
+        db.update_tracking_record(tracking, stopped_at=stopped_at)
 
         # Add comment to Todoist if linked
         if tracking.todoist_task_id and duration > 0:
@@ -1391,7 +1371,7 @@ def time_start(
 ):
     """Start time tracking, optionally linked to a Todoist task."""
     try:
-        zeit = ZeitIntegration()
+        bartib = BartibIntegration()
 
         # Check for active tracking
         active = db.get_active_tracking()
@@ -1422,32 +1402,33 @@ def time_start(
                 raise typer.Exit(1) from None
 
             # Get project name
-            project = api.get_project(todoist_task.project_id)
-            project_name = project.name if project else "Unknown"
+            project_obj = api.get_project(todoist_task.project_id)
+            project_name = project_obj.name if project_obj else "Unknown"
 
             # Check for project mapping
             project_mapping = config_manager.get_todoist_project_mappings().get(
                 todoist_task.project_id
             )
             if project_mapping:
-                zeit_project, zeit_task = build_zeit_identifiers(
-                    project_mapping["folder"], project_mapping.get("client", "")
+                bartib_project = build_bartib_project(
+                    project_mapping["folder"],
+                    project_mapping.get("client", ""),
+                    tags=todoist_task.labels,
                 )
             else:
-                zeit_project = sanitize_project_name(project_name)
-                zeit_task = "general"
+                bartib_project = build_bartib_project(project_name, tags=todoist_task.labels)
 
-            # Use task content as note if not provided
+            # Use task content as description if not provided
             if not note:
                 note = todoist_task.content
 
-            # Start zeit tracking
-            zeit.start_tracking(note=note, project=zeit_project, task=zeit_task)
+            # Start bartib tracking
+            bartib.start_tracking(description=note, project=bartib_project)
 
             # Save to database
             db.create_tracking_record(
                 todoist_task_id=task,
-                project_name=zeit_project,
+                project_name=bartib_project,
                 task_name=todoist_task.content,
                 started_at=datetime.now(),
             )
@@ -1457,7 +1438,7 @@ def time_start(
                 api.create_comment(task, "⏱️ Started tracking time")
 
             typer.echo(f"▶️  Started tracking: {todoist_task.content}")
-            typer.echo(f"   📁 Project: {zeit_project}/{zeit_task}")
+            typer.echo(f"   📁 Project: {bartib_project}")
             typer.echo(f"   🔗 Task ID: {task}")
 
         else:
@@ -1466,13 +1447,13 @@ def time_start(
                 note = typer.prompt("What are you working on?")
 
             # Use a default project for generic tracking
-            zeit.start_tracking(note=note, project="taskbridge", task="general")
+            bartib.start_tracking(description=note, project="taskbridge")
             typer.echo(f"▶️  Started tracking: {note}")
             typer.echo("   ℹ️  Use --task to link to a Todoist task")
 
     except RuntimeError as e:
-        typer.echo(f"❌ Zeit error: {e}")
-        typer.echo("   Make sure zeit is installed: https://codeberg.org/mrus/zeit")
+        typer.echo(f"❌ Bartib error: {e}")
+        typer.echo("   Make sure bartib is installed: https://github.com/nikolassv/bartib")
         raise typer.Exit(1) from None
     except Exception as e:
         typer.echo(f"❌ Error: {e}")
@@ -1480,9 +1461,7 @@ def time_start(
 
 
 @time_app.command("stop")
-def time_stop(
-    note: str | None = typer.Option(None, "--note", "-n", help="Final note when stopping"),
-):
+def time_stop():
     """Stop active time tracking."""
     try:
         # Check for active tracking
@@ -1495,14 +1474,14 @@ def time_stop(
         typer.echo(f"⏹️  Stopping: {active.task_name} ({active.project_name})")
 
         # Stop tracking
-        success, duration = stop_tracking_internal(active, note=note)
+        success, duration = stop_tracking_internal(active)
 
         if success:
             typer.echo(f"✅ Tracked {format_duration(duration)}")
             if active.todoist_task_id:
                 typer.echo(f"   🔗 Linked to task: {active.todoist_task_id}")
         else:
-            typer.echo("⚠️  Warning: Could not stop zeit tracking")
+            typer.echo("⚠️  Warning: Could not stop bartib tracking")
 
     except Exception as e:
         typer.echo(f"❌ Error: {e}")
@@ -1514,48 +1493,27 @@ def time_list(
     project: str | None = typer.Option(None, "--project", "-p", help="Filter by project"),
     days: int = typer.Option(7, "--days", "-d", help="Number of days to show"),
 ):
-    """List recent time tracking blocks."""
+    """List recent time tracking activities."""
     try:
-        zeit = ZeitIntegration()
+        from datetime import timedelta
 
-        # Calculate start date
-        start_filter = f"{days} days ago" if days > 1 else "today"
+        bartib = BartibIntegration()
 
-        # Get blocks
-        blocks = zeit.list_blocks(project=project, start=start_filter)
+        if days == 1:
+            output = bartib.list_activities(project=project, today=True)
+        else:
+            from_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+            output = bartib.list_activities(project=project, from_date=from_date)
 
-        if not blocks:
-            typer.echo(f"No time blocks found in the last {days} days")
+        if not output.strip():
+            typer.echo(f"No activities found in the last {days} days")
             return
 
-        typer.echo(f"\n⏱️  Time Blocks (last {days} days):")
-        typer.echo("=" * 80)
-
-        for block in blocks[-20:]:  # Show last 20
-            duration = calculate_duration(block)
-            duration_str = format_duration(duration)
-
-            # Format start time
-            start_dt = datetime.fromisoformat(block.start.replace("Z", "+00:00"))
-            start_str = start_dt.strftime("%Y-%m-%d %H:%M")
-
-            # Check if still active
-            is_active = "0001-01-01" in block.end
-
-            status = "🔴 ACTIVE" if is_active else f"⏱️  {duration_str}"
-
-            typer.echo(f"\n{status} - {block.note}")
-            typer.echo(f"   📁 {block.project_sid}/{block.task_sid}")
-            typer.echo(f"   🕐 Started: {start_str}")
-            if not is_active:
-                end_dt = datetime.fromisoformat(block.end.replace("Z", "+00:00"))
-                end_str = end_dt.strftime("%Y-%m-%d %H:%M")
-                typer.echo(f"   🕐 Ended: {end_str}")
-
-        typer.echo()
+        typer.echo(f"\n⏱️  Activities (last {days} days):")
+        typer.echo(output)
 
     except RuntimeError as e:
-        typer.echo(f"❌ Zeit error: {e}")
+        typer.echo(f"❌ Bartib error: {e}")
         raise typer.Exit(1) from None
     except Exception as e:
         typer.echo(f"❌ Error: {e}")
@@ -1565,32 +1523,28 @@ def time_list(
 @time_app.command("stats")
 def time_stats(
     project: str | None = typer.Option(None, "--project", "-p", help="Filter by project"),
-    period: str = typer.Option("week", "--period", help="Period: today, week, month"),
+    period: str = typer.Option("week", "--period", help="Period: today, week, last_week"),
 ):
-    """View time tracking statistics."""
+    """View time tracking report."""
     try:
-        zeit = ZeitIntegration()
+        bartib = BartibIntegration()
 
-        # Map period to zeit format
-        period_map = {"today": "today", "week": "this week", "month": "this month"}
+        report = bartib.get_report(
+            project=project,
+            today=(period == "today"),
+            current_week=(period == "week"),
+            last_week=(period == "last_week"),
+        )
 
-        start_filter = period_map.get(period, "this week")
-
-        # Get stats
-        stats = zeit.get_stats(project=project, start=start_filter)
-
-        if not stats:
-            typer.echo(f"No statistics available for {period}")
+        if not report.strip():
+            typer.echo(f"No activities recorded for {period}")
             return
 
-        typer.echo(f"\n📊 Time Tracking Statistics ({period}):")
-        typer.echo("=" * 80)
-
-        # Display stats (the format depends on zeit's output)
-        typer.echo(f"\n{stats}")
+        typer.echo(f"\n📊 Time Report ({period}):")
+        typer.echo(report)
 
     except RuntimeError as e:
-        typer.echo(f"❌ Zeit error: {e}")
+        typer.echo(f"❌ Bartib error: {e}")
         raise typer.Exit(1) from None
     except Exception as e:
         typer.echo(f"❌ Error: {e}")

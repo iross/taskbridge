@@ -33,11 +33,10 @@ class TodoistNoteMapping:
 
 @dataclass
 class TaskTimeTracking:
-    """Task time tracking record linking Todoist tasks to zeit time blocks."""
+    """Task time tracking record linking Todoist tasks to bartib activities."""
 
     id: int | None = None
     todoist_task_id: str = ""
-    zeit_block_key: str | None = None
     project_name: str = ""
     task_name: str = ""
     started_at: datetime | None = None
@@ -305,7 +304,6 @@ class Database:
         project_name: str,
         task_name: str,
         started_at: datetime | None = None,
-        zeit_block_key: str | None = None,
     ) -> int | None:
         """Create a new time tracking record."""
         if started_at is None:
@@ -315,11 +313,11 @@ class Database:
             cursor = conn.execute(
                 """
                 INSERT INTO task_time_tracking (
-                    todoist_task_id, zeit_block_key, project_name, task_name, started_at
+                    todoist_task_id, project_name, task_name, started_at
                 )
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?)
             """,
-                (todoist_task_id, zeit_block_key, project_name, task_name, started_at.isoformat()),
+                (todoist_task_id, project_name, task_name, started_at.isoformat()),
             )
 
             conn.commit()
@@ -343,7 +341,6 @@ class Database:
                 return TaskTimeTracking(
                     id=row["id"],
                     todoist_task_id=row["todoist_task_id"],
-                    zeit_block_key=row["zeit_block_key"],
                     project_name=row["project_name"],
                     task_name=row["task_name"],
                     started_at=datetime.fromisoformat(row["started_at"])
@@ -378,7 +375,6 @@ class Database:
                 return TaskTimeTracking(
                     id=row["id"],
                     todoist_task_id=row["todoist_task_id"],
-                    zeit_block_key=row["zeit_block_key"],
                     project_name=row["project_name"],
                     task_name=row["task_name"],
                     started_at=datetime.fromisoformat(row["started_at"])
@@ -415,7 +411,6 @@ class Database:
                     TaskTimeTracking(
                         id=row["id"],
                         todoist_task_id=row["todoist_task_id"],
-                        zeit_block_key=row["zeit_block_key"],
                         project_name=row["project_name"],
                         task_name=row["task_name"],
                         started_at=datetime.fromisoformat(row["started_at"])
