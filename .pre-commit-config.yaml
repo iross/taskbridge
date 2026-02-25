@@ -30,3 +30,12 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [pre-commit]
+
+      # Reinstall package after commit so the CLI in PATH stays current
+      - id: install
+        name: install
+        entry: uv pip install -e .
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [post-commit]
