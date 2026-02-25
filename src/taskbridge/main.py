@@ -672,6 +672,7 @@ def task_note(
             )
 
             api.create_comment(task_id, "⏱️ Started tracking time")
+            start_flow_session(task.content)
             typer.echo("✅ Time tracking started")
 
         except Exception as e:
@@ -1265,6 +1266,14 @@ def sync_projects(
 # ============================================================================
 
 
+def start_flow_session(title: str) -> None:
+    """Start a Flow pomodoro session and set its title. Best-effort, never raises."""
+    safe_title = title.replace("\\", "\\\\").replace('"', '\\"')
+    script = f'tell application "Flow"\nstart\nsetTitle to "{safe_title}"\nend tell'
+    with contextlib.suppress(Exception):
+        subprocess.run(["osascript", "-e", script], capture_output=True, timeout=5)
+
+
 def sanitize_project_name(name: str) -> str:
     """Sanitize project name (remove emojis, special chars, normalize)."""
     import re
@@ -1449,6 +1458,7 @@ def time_start(
             with contextlib.suppress(Exception):
                 api.create_comment(task, "⏱️ Started tracking time")
 
+            start_flow_session(todoist_task.content)
             typer.echo(f"▶️  Started tracking: {todoist_task.content}")
             typer.echo(f"   📁 Project: {bartib_project}")
             typer.echo(f"   🔗 Task ID: {task}")
@@ -1677,6 +1687,7 @@ def meeting_start(
             started_at=datetime.now(),
         )
 
+        start_flow_session(description)
         typer.echo(f"▶️  Meeting: {description}")
         typer.echo(f"   📁 {bartib_project}")
         if definition:
