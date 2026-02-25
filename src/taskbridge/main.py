@@ -672,7 +672,7 @@ def task_note(
             )
 
             api.create_comment(task_id, "⏱️ Started tracking time")
-            start_focus_session()
+            start_focus_session(task.content)
             typer.echo("✅ Time tracking started")
 
         except Exception as e:
@@ -1266,9 +1266,11 @@ def sync_projects(
 # ============================================================================
 
 
-def start_focus_session() -> None:
-    """Start a Raycast Focus session. Best-effort, never raises."""
+def start_focus_session(title: str = "") -> None:
+    """Start a Raycast Focus session, copying title to clipboard. Best-effort, never raises."""
     with contextlib.suppress(Exception):
+        if title:
+            subprocess.run(["pbcopy"], input=title.encode(), timeout=5)
         subprocess.run(
             ["open", "raycast://extensions/raycast/raycast-focus/start-focus-session"],
             capture_output=True,
@@ -1460,7 +1462,7 @@ def time_start(
             with contextlib.suppress(Exception):
                 api.create_comment(task, "⏱️ Started tracking time")
 
-            start_focus_session()
+            start_focus_session(todoist_task.content)
             typer.echo(f"▶️  Started tracking: {todoist_task.content}")
             typer.echo(f"   📁 Project: {bartib_project}")
             typer.echo(f"   🔗 Task ID: {task}")
@@ -1689,7 +1691,7 @@ def meeting_start(
             started_at=datetime.now(),
         )
 
-        start_focus_session()
+        start_focus_session(description)
         typer.echo(f"▶️  Meeting: {description}")
         typer.echo(f"   📁 {bartib_project}")
         if definition:
