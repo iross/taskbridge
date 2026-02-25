@@ -134,7 +134,7 @@ class TestMeetingDefineCommand:
         )
 
         assert result.exit_code == 0
-        assert "acme::meetings::standup" in result.output
+        assert "acme::meetings::standup" in result.output  # define preview doesn't add tag
 
     @patch("taskbridge.main.config_manager")
     def test_define_minimal(self, mock_cfg, runner):
@@ -225,7 +225,7 @@ class TestMeetingStartCommand:
         assert result.exit_code == 0
         mock_bartib_cls.return_value.start_tracking.assert_called_once_with(
             description="Daily Standup",
-            project="acme::webapp::standup",
+            project="acme::webapp::standup,meeting",
         )
         assert "Daily Standup" in result.output
         assert "(recurring: standup)" in result.output
@@ -245,7 +245,7 @@ class TestMeetingStartCommand:
         assert result.exit_code == 0
         mock_bartib_cls.return_value.start_tracking.assert_called_once_with(
             description="1:1 with Bob",
-            project="acme::meetings",
+            project="acme::meetings::meeting",
         )
 
     @patch("taskbridge.main.db")
@@ -293,7 +293,7 @@ class TestMeetingStartCommand:
         assert result.exit_code == 0
         mock_bartib_cls.return_value.start_tracking.assert_called_once_with(
             description="Team sync",
-            project="meetings",
+            project="meetings::meeting",
         )
 
     @patch("taskbridge.main.db")

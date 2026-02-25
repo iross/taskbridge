@@ -1669,6 +1669,8 @@ def meeting_start(
             tag_str = tags
 
         tag_list = [t.strip() for t in tag_str.split(",") if t.strip()] if tag_str else []
+        if "meeting" not in tag_list:
+            tag_list.append("meeting")
         bartib_project = build_bartib_project(resolved_project, resolved_client, tag_list)
 
         # Stop any active tracking first
