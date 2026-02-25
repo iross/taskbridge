@@ -31,10 +31,10 @@ repos:
         always_run: true
         stages: [pre-commit]
 
-      # Reinstall package after commit so the CLI in PATH stays current
+      # Reinstall uv tool after commit so the CLI in PATH stays current
       - id: install
         name: install
-        entry: uv pip install -e .
+        entry: uv tool install --reinstall .
         language: system
         pass_filenames: false
         always_run: true
