@@ -27,6 +27,7 @@ project_app = typer.Typer(help="Project management commands")
 map_app = typer.Typer(help="Task-to-note mapping commands")
 sync_app = typer.Typer(help="Synchronization commands")
 time_app = typer.Typer(help="Time tracking commands")
+meeting_app = typer.Typer(help="Meeting time tracking commands")
 
 app.add_typer(config_app, name="config")
 app.add_typer(task_app, name="task")
@@ -34,6 +35,7 @@ app.add_typer(project_app, name="project")
 app.add_typer(map_app, name="map")
 app.add_typer(sync_app, name="sync")
 app.add_typer(time_app, name="time")
+app.add_typer(meeting_app, name="meeting")
 
 
 # ============================================================================
@@ -1542,6 +1544,133 @@ def time_stats(
 
         typer.echo(f"\n📊 Time Report ({period}):")
         typer.echo(report)
+
+    except RuntimeError as e:
+        typer.echo(f"❌ Bartib error: {e}")
+        raise typer.Exit(1) from None
+    except Exception as e:
+        typer.echo(f"❌ Error: {e}")
+        raise typer.Exit(1) from None
+
+
+# ============================================================================
+# MEETING COMMANDS
+# ============================================================================
+
+
+@meeting_app.command("define")
+def meeting_define(
+    alias: str,
+    description: str = typer.Option(..., "--description", "-d", help="Meeting description"),
+    project: str = typer.Option("", "--project", "-p", help="Project context"),
+    client: str = typer.Option("", "--client", "-c", help="Client context"),
+    tags: str = typer.Option("", "--tags", "-t", help="Comma-separated tags"),
+):
+    """Define a recurring meeting template by alias."""
+    tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+
+    config_manager.set_meeting(
+        alias=alias,
+        description=description,
+        project=project,
+        client=client,
+        tags=tag_list,
+    )
+
+    bartib_project = build_bartib_project(project or "meetings", client, tag_list)
+    typer.echo(f"✅ Defined meeting '{alias}'")
+    typer.echo(f"   Description: {description}")
+    typer.echo(f"   Bartib project: {bartib_project}")
+    typer.echo(f"   Start with: taskbridge meeting start {alias}")
+
+
+@meeting_app.command("list")
+def meeting_list():
+    """List all defined recurring meeting templates."""
+    meetings = config_manager.get_meetings()
+
+    if not meetings:
+        typer.echo("No recurring meetings defined.")
+        typer.echo("   Use 'taskbridge meeting define <alias>' to add one.")
+        return
+
+    typer.echo(f"\n📅 Recurring Meetings ({len(meetings)}):")
+    typer.echo("=" * 60)
+
+    for alias, m in meetings.items():
+        bartib_project = build_bartib_project(
+            m.get("project") or "meetings", m.get("client", ""), m.get("tags", [])
+        )
+        typer.echo(f"\n  {alias}")
+        typer.echo(f"    Description : {m['description']}")
+        typer.echo(f"    Bartib      : {bartib_project}")
+        if m.get("tags"):
+            typer.echo(f"    Tags        : {', '.join(m['tags'])}")
+
+    typer.echo()
+
+
+@meeting_app.command("undefine")
+def meeting_undefine(alias: str):
+    """Remove a recurring meeting definition."""
+    if config_manager.delete_meeting(alias):
+        typer.echo(f"✅ Removed meeting '{alias}'")
+    else:
+        typer.echo(f"❌ No meeting named '{alias}'")
+        raise typer.Exit(1) from None
+
+
+@meeting_app.command("start")
+def meeting_start(
+    name: str,
+    project: str = typer.Option("", "--project", "-p", help="Project (overrides definition)"),
+    client: str = typer.Option("", "--client", "-c", help="Client (overrides definition)"),
+    tags: str = typer.Option("", "--tags", "-t", help="Comma-separated tags (overrides)"),
+):
+    """Start tracking a meeting. NAME is an alias or an ad-hoc description."""
+    try:
+        bartib = BartibIntegration()
+
+        # Resolve alias or treat name as ad-hoc description
+        definition = config_manager.get_meetings().get(name)
+        if definition:
+            description = definition["description"]
+            resolved_project = project or definition.get("project") or "meetings"
+            resolved_client = client or definition.get("client", "")
+            tag_str = tags or ",".join(definition.get("tags", []))
+        else:
+            description = name
+            resolved_project = project or "meetings"
+            resolved_client = client
+            tag_str = tags
+
+        tag_list = [t.strip() for t in tag_str.split(",") if t.strip()] if tag_str else []
+        bartib_project = build_bartib_project(resolved_project, resolved_client, tag_list)
+
+        # Stop any active tracking first
+        active = db.get_active_tracking()
+        if active:
+            typer.echo(f"⏹️  Stopping: {active.task_name} ({active.project_name})")
+            success, duration = stop_tracking_internal(active)
+            if success:
+                typer.echo(f"   ✅ Tracked {format_duration(duration)}")
+
+        # Start bartib
+        bartib.start_tracking(description=description, project=bartib_project)
+
+        # Save to DB with a synthetic task ID so stop/list still work
+        slug = name.lower().replace(" ", "-")
+        db.create_tracking_record(
+            todoist_task_id=f"meeting:{slug}",
+            project_name=bartib_project,
+            task_name=description,
+            started_at=datetime.now(),
+        )
+
+        typer.echo(f"▶️  Meeting: {description}")
+        typer.echo(f"   📁 {bartib_project}")
+        if definition:
+            typer.echo(f"   (recurring: {name})")
 
     except RuntimeError as e:
         typer.echo(f"❌ Bartib error: {e}")

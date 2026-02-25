@@ -60,6 +60,41 @@ class Config:
         """Get Todoist sync label for automatic note creation."""
         return self.get("todoist_sync_label", "@obsidian")
 
+    def get_meetings(self) -> dict[str, dict]:
+        """Get all defined recurring meeting templates.
+
+        Returns:
+            Dict mapping alias to {description, project, client, tags}
+        """
+        return self.get("meetings", {})
+
+    def set_meeting(
+        self,
+        alias: str,
+        description: str,
+        project: str = "",
+        client: str = "",
+        tags: list[str] | None = None,
+    ) -> None:
+        """Define or update a recurring meeting template."""
+        meetings = self.get_meetings()
+        meetings[alias] = {
+            "description": description,
+            "project": project,
+            "client": client,
+            "tags": tags or [],
+        }
+        self.set("meetings", meetings)
+
+    def delete_meeting(self, alias: str) -> bool:
+        """Remove a recurring meeting definition. Returns False if alias not found."""
+        meetings = self.get_meetings()
+        if alias not in meetings:
+            return False
+        del meetings[alias]
+        self.set("meetings", meetings)
+        return True
+
     def get_todoist_project_mappings(self) -> dict[str, dict[str, str]]:
         """Get Todoist project to Obsidian folder mappings.
 
