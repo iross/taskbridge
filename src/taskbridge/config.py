@@ -114,7 +114,7 @@ class Config:
         try:
             headers = {"Authorization": f"Bearer {token}"}
             response = requests.get(
-                "https://api.todoist.com/rest/v2/projects", headers=headers, timeout=10
+                "https://api.todoist.com/api/v1/projects", headers=headers, timeout=10
             )
             return response.status_code == 200
         except Exception:
