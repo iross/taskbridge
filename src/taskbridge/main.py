@@ -1380,8 +1380,9 @@ def stop_tracking_internal(tracking: TaskTimeTracking) -> tuple[bool, int]:
         # Update database
         db.update_tracking_record(tracking, stopped_at=stopped_at)
 
-        # Add comment to Todoist if linked
-        if tracking.todoist_task_id and duration > 0:
+        # Add comment to Todoist if linked (not a synthetic meeting ID)
+        is_meeting = tracking.todoist_task_id.startswith("meeting:")
+        if tracking.todoist_task_id and not is_meeting and duration > 0:
             try:
                 api = TodoistAPI()
                 formatted_time = format_duration(duration)

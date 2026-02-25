@@ -421,6 +421,26 @@ class TestStopTrackingInternal:
 
     @patch("taskbridge.main.BartibIntegration")
     @patch("taskbridge.main.db")
+    def test_stop_tracking_internal_skips_comment_for_meeting(self, mock_db, mock_bartib_class):
+        """Test that no Todoist comment is added for synthetic meeting IDs."""
+        from taskbridge.main import stop_tracking_internal
+
+        tracking = TaskTimeTracking(
+            id=1,
+            todoist_task_id="meeting:standup",
+            project_name="CHTC::meetings::meeting",
+            task_name="Standup",
+            started_at=datetime(2026, 1, 8, 10, 0, 0),
+        )
+
+        with patch("taskbridge.main.datetime") as mock_dt:
+            mock_dt.now.return_value = datetime(2026, 1, 8, 10, 30, 0)
+            with patch("taskbridge.main.TodoistAPI") as mock_api_class:
+                stop_tracking_internal(tracking)
+                mock_api_class.return_value.create_comment.assert_not_called()
+
+    @patch("taskbridge.main.BartibIntegration")
+    @patch("taskbridge.main.db")
     def test_stop_tracking_internal_handles_errors(self, mock_db, mock_bartib_class):
         """Test that errors are handled gracefully."""
         from taskbridge.main import stop_tracking_internal
