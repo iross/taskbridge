@@ -2097,16 +2097,28 @@ def time_fill(
                 f"  [{b_start.strftime('%H:%M')} – {b_end.strftime('%H:%M')}]  {label}  ({b_mins}m)"
             )
 
-            # Project selection
+            # Project selection — event blocks require explicit choice; non-event blocks
+            # default to last used project so you can press Enter to reuse it.
+            is_event_block = suggested_title is not None
             if recent_projects:
                 typer.echo("  Recent projects:")
                 for i, p in enumerate(recent_projects, 1):
-                    default_marker = "  ← default" if p == last_project else ""
+                    default_marker = (
+                        "  ← default" if (not is_event_block and p == last_project) else ""
+                    )
                     typer.echo(f"    {i}) {p}{default_marker}")
                 typer.echo("    (or type a project name / client::project)")
 
-                default_hint = "1" if last_project == recent_projects[0] else ""
-                raw = typer.prompt("  Project", default=default_hint).strip()
+                if is_event_block:
+                    raw = typer.prompt("  Project").strip()
+                else:
+                    idx_hint = (
+                        str(recent_projects.index(last_project) + 1)
+                        if last_project in recent_projects
+                        else ""
+                    )
+                    raw = typer.prompt("  Project", default=idx_hint).strip()
+
                 if raw.isdigit():
                     idx = int(raw) - 1
                     if 0 <= idx < len(recent_projects):
@@ -2125,9 +2137,8 @@ def time_fill(
                 typer.echo("  No project entered, skipping block.")
                 continue
 
-            # Description
-            default_desc = suggested_title or ""
-            description = typer.prompt("  Description", default=default_desc).strip()
+            # Description — default to calendar event title when available.
+            description = typer.prompt("  Description", default=suggested_title or "").strip()
             if not description:
                 typer.echo("  No description entered, skipping block.")
                 continue
