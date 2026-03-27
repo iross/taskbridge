@@ -120,6 +120,26 @@ class Config:
         except Exception:
             return False
 
+    def get_gcal_credentials_path(self) -> str | None:
+        """Get path to Google Calendar OAuth2 credentials JSON file."""
+        return self.get("gcal_credentials_path")
+
+    def get_gcal_token_path(self) -> str:
+        """Get path where the cached Google OAuth2 token is stored."""
+        return str(self.config_dir / "gcal_token.json")
+
+    def get_gcal_calendar_id(self) -> str:
+        """Get the Google Calendar ID to use (default: primary)."""
+        return self.get("gcal_calendar_id", "primary")
+
+    def set_gcal_config(self, credentials_path: str, calendar_id: str = "primary") -> None:
+        """Save Google Calendar configuration."""
+        creds_path = Path(credentials_path).expanduser()
+        if not creds_path.exists():
+            raise ValueError(f"Credentials file not found: {creds_path}")
+        self.set("gcal_credentials_path", str(creds_path))
+        self.set("gcal_calendar_id", calendar_id)
+
     def get_obsidian_vault_path(self) -> str | os.PathLike[str]:
         """Get Obsidian vault path."""
         return self.get("obsidian_vault_path")

@@ -133,6 +133,55 @@ def config_obsidian():
         raise typer.Exit(1) from None
 
 
+@config_app.command("gcal")
+def config_gcal():
+    """Configure Google Calendar integration for time-gap filling."""
+    typer.echo("Google Calendar Configuration")
+    typer.echo("=" * 30)
+    typer.echo(
+        "You need a credentials.json file from Google Cloud Console.\n"
+        "  1. Go to console.cloud.google.com → APIs & Services → Credentials\n"
+        "  2. Create an OAuth 2.0 Client ID (Desktop app)\n"
+        "  3. Download the JSON and note its path\n"
+        "  4. Enable the Google Calendar API in your project\n"
+    )
+
+    current_path = config_manager.get_gcal_credentials_path()
+    if current_path:
+        typer.echo(f"Current credentials: {current_path}")
+        if not typer.confirm("Update credentials path?"):
+            credentials_path = current_path
+        else:
+            credentials_path = typer.prompt("Path to credentials.json")
+    else:
+        credentials_path = typer.prompt("Path to credentials.json")
+
+    current_cal = config_manager.get_gcal_calendar_id()
+    calendar_id = typer.prompt("Calendar ID", default=current_cal)
+
+    try:
+        config_manager.set_gcal_config(credentials_path, calendar_id)
+    except ValueError as e:
+        typer.echo(f"❌ {e}")
+        raise typer.Exit(1) from None
+
+    typer.echo("\nTesting authentication (browser will open for first-time auth)...")
+    try:
+        from taskbridge.gcal_integration import GoogleCalendarClient
+
+        creds_path = config_manager.get_gcal_credentials_path()
+        assert creds_path is not None  # set just above
+        client = GoogleCalendarClient(
+            credentials_path=creds_path,
+            token_path=config_manager.get_gcal_token_path(),
+        )
+        client.authenticate()
+        typer.echo("✅ Google Calendar configured and authenticated")
+    except Exception as e:
+        typer.echo(f"❌ Authentication failed: {e}")
+        raise typer.Exit(1) from None
+
+
 # ============================================================================
 # TASK COMMANDS
 # ============================================================================
@@ -570,6 +619,7 @@ def task_select(
 def task_note(
     task_id: str,
     open_note: bool = typer.Option(True, "--open/--no-open", help="Open note after creation"),
+    focus: bool = typer.Option(True, "--focus/--no-focus", help="Start Raycast Focus session"),
 ):
     """Create or recreate an Obsidian note for a Todoist task."""
     if not config_manager.get_todoist_token():
@@ -673,7 +723,8 @@ def task_note(
             )
 
             api.create_comment(task_id, "⏱️ Started tracking time")
-            start_focus_session(task.content)
+            if focus:
+                start_focus_session(task.content)
             typer.echo("✅ Time tracking started")
 
         except Exception as e:
@@ -1447,6 +1498,210 @@ def format_report(entries: list[ReportEntry]) -> str:
     return "\n".join(lines)
 
 
+def find_workday_gaps(
+    records: list[TaskTimeTracking],
+    work_start: datetime,
+    work_end: datetime,
+    now: datetime,
+    min_minutes: int = 15,
+) -> list[tuple[datetime, datetime]]:
+    """Return untracked intervals within the work window.
+
+    Args:
+        records: Tracked sessions for the day (from parse_bartib_file).
+        work_start: Beginning of the work window (naive datetime).
+        work_end: End of the work window (naive datetime).
+        now: Current time (used to cap active sessions without a stop time).
+        min_minutes: Gaps shorter than this are ignored.
+
+    Returns:
+        List of (gap_start, gap_end) pairs sorted chronologically.
+    """
+    from datetime import timedelta
+
+    intervals: list[tuple[datetime, datetime]] = []
+    for r in records:
+        if r.started_at is None:
+            continue
+        start = r.started_at
+        end = r.stopped_at if r.stopped_at else now
+        # Clamp to work window
+        start = max(start, work_start)
+        end = min(end, work_end)
+        if start < end:
+            intervals.append((start, end))
+
+    intervals.sort(key=lambda x: x[0])
+
+    # Merge overlapping intervals
+    merged: list[list[datetime]] = []
+    for s, e in intervals:
+        if merged and s <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], e)
+        else:
+            merged.append([s, e])
+
+    threshold = timedelta(minutes=min_minutes)
+    gaps: list[tuple[datetime, datetime]] = []
+    cursor = work_start
+    for s, e in merged:
+        if s - cursor >= threshold:
+            gaps.append((cursor, s))
+        cursor = max(cursor, e)
+    if work_end - cursor >= threshold:
+        gaps.append((cursor, work_end))
+
+    return gaps
+
+
+def split_gap_by_events(
+    gap_start: datetime,
+    gap_end: datetime,
+    events: list,
+) -> list[tuple[datetime, datetime, str | None]]:
+    """Divide a gap into sub-blocks aligned with calendar event boundaries.
+
+    Each returned tuple is (block_start, block_end, event_title_or_None).
+    Blocks not covered by any event have title=None.
+
+    Args:
+        gap_start: Start of the untracked gap.
+        gap_end: End of the untracked gap.
+        events: List of CalendarEvent objects that may overlap the gap.
+    """
+    # Collect breakpoints from events that overlap the gap
+    breakpoints: set[datetime] = {gap_start, gap_end}
+    overlapping = []
+    for ev in events:
+        ev_s = max(ev.start, gap_start)
+        ev_e = min(ev.end, gap_end)
+        if ev_s < ev_e:
+            breakpoints.add(ev_s)
+            breakpoints.add(ev_e)
+            overlapping.append(ev)
+
+    sorted_pts = sorted(breakpoints)
+    blocks: list[tuple[datetime, datetime, str | None]] = []
+    for i in range(len(sorted_pts) - 1):
+        b_start = sorted_pts[i]
+        b_end = sorted_pts[i + 1]
+        mid = b_start + (b_end - b_start) / 2
+        title = None
+        for ev in overlapping:
+            if ev.start <= mid < ev.end:
+                title = ev.title
+                break
+        blocks.append((b_start, b_end, title))
+
+    return blocks
+
+
+def get_recent_projects(bartib_file: str, limit: int = 20) -> list[str]:
+    """Return the most recently used distinct bartib project names.
+
+    Args:
+        bartib_file: Path to the bartib activity file.
+        limit: Maximum number of distinct project names to return.
+    """
+    projects: list[str] = []
+    seen: set[str] = set()
+    try:
+        with open(bartib_file) as f:
+            lines = f.readlines()
+        for line in reversed(lines):
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(" | ", 2)
+            if len(parts) == 3:
+                project = parts[1]
+                if project not in seen:
+                    seen.add(project)
+                    projects.append(project)
+                    if len(projects) >= limit:
+                        break
+    except OSError:
+        pass
+    return projects
+
+
+def append_bartib_entry(project: str, description: str, start: datetime, end: datetime) -> None:
+    """Append a completed time entry directly to the bartib file.
+
+    Args:
+        project: Bartib project string (e.g. "CHTC::htcondor").
+        description: Activity description.
+        start: Entry start time.
+        end: Entry end time.
+
+    Raises:
+        RuntimeError: If BARTIB_FILE env var is not set.
+    """
+    import os
+
+    bartib_file = os.environ.get("BARTIB_FILE")
+    if not bartib_file:
+        raise RuntimeError(
+            "BARTIB_FILE environment variable is not set. "
+            "Set it to the path of your bartib activity log."
+        )
+    start_str = start.strftime("%Y-%m-%d %H:%M")
+    end_str = end.strftime("%Y-%m-%d %H:%M")
+    line = f"{start_str} - {end_str} | {project} | {description}\n"
+    with open(bartib_file, "a") as f:
+        f.write(line)
+
+
+def parse_bartib_file(from_dt: datetime, to_dt: datetime) -> list[TaskTimeTracking]:
+    """Parse the bartib activity file and return records whose start time is in [from_dt, to_dt).
+
+    Reads the file path from the BARTIB_FILE environment variable.
+    Raises RuntimeError if BARTIB_FILE is not set.
+    """
+    import os
+
+    bartib_file = os.environ.get("BARTIB_FILE")
+    if not bartib_file:
+        raise RuntimeError(
+            "BARTIB_FILE environment variable is not set. "
+            "Set it to the path of your bartib activity log."
+        )
+
+    records: list[TaskTimeTracking] = []
+    with open(bartib_file) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(" | ", 2)
+            if len(parts) != 3:
+                continue
+            time_part, project_name, task_name = parts[0], parts[1], parts[2]
+
+            # Active session: "YYYY-MM-DD HH:MM"
+            # Completed session: "YYYY-MM-DD HH:MM - YYYY-MM-DD HH:MM"
+            if " - " in time_part:
+                start_str, stop_str = time_part.split(" - ", 1)
+                started_at = datetime.strptime(start_str.strip(), "%Y-%m-%d %H:%M")
+                stopped_at = datetime.strptime(stop_str.strip(), "%Y-%m-%d %H:%M")
+            else:
+                started_at = datetime.strptime(time_part.strip(), "%Y-%m-%d %H:%M")
+                stopped_at = None
+
+            if started_at < from_dt or started_at >= to_dt:
+                continue
+
+            records.append(
+                TaskTimeTracking(
+                    project_name=project_name,
+                    task_name=task_name,
+                    started_at=started_at,
+                    stopped_at=stopped_at,
+                )
+            )
+    return records
+
+
 def stop_tracking_internal(tracking: TaskTimeTracking) -> tuple[bool, int]:
     """Stop bartib tracking and update records.
 
@@ -1491,6 +1746,7 @@ def stop_tracking_internal(tracking: TaskTimeTracking) -> tuple[bool, int]:
 def time_start(
     task: str | None = typer.Option(None, "--task", "-t", help="Todoist task ID to link"),
     note: str | None = typer.Option(None, "--note", "-n", help="Note/description for tracking"),
+    focus: bool = typer.Option(True, "--focus/--no-focus", help="Start Raycast Focus session"),
 ):
     """Start time tracking, optionally linked to a Todoist task."""
     try:
@@ -1549,7 +1805,8 @@ def time_start(
             with contextlib.suppress(Exception):
                 api.create_comment(task, "⏱️ Started tracking time")
 
-            start_focus_session(todoist_task.content)
+            if focus:
+                start_focus_session(todoist_task.content)
             typer.echo(f"▶️  Started tracking: {todoist_task.content}")
             typer.echo(f"   📁 Project: {bartib_project}")
             typer.echo(f"   🔗 Task ID: {task}")
@@ -1662,16 +1919,210 @@ def time_report(
             else (f"{start.strftime('%Y-%m-%d')} – {end_day.strftime('%Y-%m-%d')}")
         )
 
-        records = db.get_tracking_in_range(start, end)
+        records = parse_bartib_file(start, end)
         entries = build_report_entries(records, now=datetime.now())
         report = format_report(entries)
 
         typer.echo(f"Report: {label}\n")
         typer.echo(report)
 
-    except ValueError as e:
-        typer.echo(f"❌ Invalid date: {e}")
+    except (ValueError, RuntimeError) as e:
+        typer.echo(f"❌ {e}")
         raise typer.Exit(1) from None
+
+
+@time_app.command("fill")
+def time_fill(
+    date: str | None = typer.Option(
+        None, "--date", help="Date to fill gaps for (YYYY-MM-DD, default: today)"
+    ),
+    work_start: str = typer.Option("08:00", "--start", help="Start of workday (HH:MM)"),
+    work_end: str = typer.Option("16:00", "--end", help="End of workday (HH:MM)"),
+    no_gcal: bool = typer.Option(False, "--no-gcal", help="Skip Google Calendar lookup"),
+    min_gap: int = typer.Option(15, "--min-gap", help="Minimum gap size in minutes to fill"),
+):
+    """Interactively fill time tracking gaps, optionally using Google Calendar events."""
+    import os
+    from datetime import timedelta
+
+    bartib_file = os.environ.get("BARTIB_FILE")
+    if not bartib_file:
+        typer.echo("❌ BARTIB_FILE environment variable is not set.")
+        raise typer.Exit(1) from None
+
+    # Resolve target date
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    if date:
+        try:
+            target_date = datetime.strptime(date, "%Y-%m-%d")
+        except ValueError:
+            typer.echo(f"❌ Invalid date format: {date} (expected YYYY-MM-DD)")
+            raise typer.Exit(1) from None
+    else:
+        target_date = today
+
+    # Parse work window
+    try:
+        ws_h, ws_m = (int(x) for x in work_start.split(":"))
+        we_h, we_m = (int(x) for x in work_end.split(":"))
+    except (ValueError, TypeError):
+        typer.echo("❌ Invalid time format (expected HH:MM)")
+        raise typer.Exit(1) from None
+
+    window_start = target_date.replace(hour=ws_h, minute=ws_m, second=0, microsecond=0)
+    window_end = target_date.replace(hour=we_h, minute=we_m, second=0, microsecond=0)
+    now = datetime.now()
+
+    typer.echo(
+        f"\nFilling time gaps for {target_date.strftime('%Y-%m-%d')}  ({work_start} – {work_end})"
+    )
+
+    # Load tracked sessions for the day
+    try:
+        records = parse_bartib_file(window_start, window_start + timedelta(days=1))
+    except RuntimeError as e:
+        typer.echo(f"❌ {e}")
+        raise typer.Exit(1) from None
+
+    gaps = find_workday_gaps(records, window_start, window_end, now=now, min_minutes=min_gap)
+
+    if not gaps:
+        typer.echo("✅ No gaps found — workday appears fully tracked.")
+        return
+
+    total_gap_mins = sum(int((e - s).total_seconds() / 60) for s, e in gaps)
+    typer.echo(
+        f"Found {len(gaps)} gap(s) totalling {total_gap_mins // 60}h {total_gap_mins % 60}m\n"
+    )
+
+    # Optionally fetch calendar events
+    cal_events: list = []
+    gcal_creds = config_manager.get_gcal_credentials_path()
+    if not no_gcal and gcal_creds:
+        typer.echo("Fetching calendar events...")
+        try:
+            from taskbridge.gcal_integration import GoogleCalendarClient
+
+            gcal = GoogleCalendarClient(
+                credentials_path=gcal_creds,
+                token_path=config_manager.get_gcal_token_path(),
+            )
+            cal_events = gcal.get_events(target_date, config_manager.get_gcal_calendar_id())
+            typer.echo(f"Found {len(cal_events)} calendar event(s)\n")
+        except Exception as e:
+            typer.echo(f"⚠️  Could not fetch calendar events: {e}")
+            typer.echo("   Continuing without calendar suggestions.\n")
+    elif not no_gcal and not config_manager.get_gcal_credentials_path():
+        typer.echo(
+            "ℹ️  Google Calendar not configured. Run 'taskbridge config gcal' to set up.\n"
+            "   Continuing without calendar suggestions.\n"
+        )
+
+    recent_projects = get_recent_projects(bartib_file)
+    last_project: str | None = recent_projects[0] if recent_projects else None
+
+    filled_count = 0
+    for gap_idx, (gap_start_dt, gap_end_dt) in enumerate(gaps, 1):
+        gap_mins = int((gap_end_dt - gap_start_dt).total_seconds() / 60)
+        typer.echo(
+            f"── Gap {gap_idx} of {len(gaps)} "
+            f"({gap_start_dt.strftime('%H:%M')} – {gap_end_dt.strftime('%H:%M')}, "
+            f"{gap_mins // 60}h {gap_mins % 60}m) {'─' * 20}"
+        )
+
+        # Find calendar events overlapping this gap
+        overlapping = [ev for ev in cal_events if ev.start < gap_end_dt and ev.end > gap_start_dt]
+        if overlapping:
+            typer.echo("  Calendar events:")
+            for ev in overlapping:
+                ev_s = max(ev.start, gap_start_dt)
+                ev_e = min(ev.end, gap_end_dt)
+                ev_mins = int((ev_e - ev_s).total_seconds() / 60)
+                typer.echo(
+                    f"    • {ev.title:<40} "
+                    f"{ev.start.strftime('%H:%M')} – {ev.end.strftime('%H:%M')} "
+                    f"({ev_mins}m)"
+                )
+
+        # Ask how to handle this gap
+        if overlapping:
+            typer.echo("\n  s) Split by calendar events   f) Fill as one block   k) Skip   q) Quit")
+            choice = typer.prompt("  Choice", default="s").strip().lower()
+        else:
+            typer.echo("\n  f) Fill as one block   k) Skip   q) Quit")
+            choice = typer.prompt("  Choice", default="f").strip().lower()
+
+        if choice == "q":
+            typer.echo("Quitting.")
+            return
+        if choice == "k":
+            typer.echo("  Skipped.\n")
+            continue
+
+        # Build list of sub-blocks to fill
+        if choice == "s" and overlapping:
+            blocks = split_gap_by_events(gap_start_dt, gap_end_dt, overlapping)
+        else:
+            blocks = [(gap_start_dt, gap_end_dt, None)]
+
+        typer.echo("")
+        for b_start, b_end, suggested_title in blocks:
+            b_mins = int((b_end - b_start).total_seconds() / 60)
+            label = f'"{suggested_title}"' if suggested_title else "(no calendar event)"
+            typer.echo(
+                f"  [{b_start.strftime('%H:%M')} – {b_end.strftime('%H:%M')}]  {label}  ({b_mins}m)"
+            )
+
+            # Project selection
+            if recent_projects:
+                typer.echo("  Recent projects:")
+                for i, p in enumerate(recent_projects, 1):
+                    default_marker = "  ← default" if p == last_project else ""
+                    typer.echo(f"    {i}) {p}{default_marker}")
+                typer.echo("    (or type a project name / client::project)")
+
+                default_hint = "1" if last_project == recent_projects[0] else ""
+                raw = typer.prompt("  Project", default=default_hint).strip()
+                if raw.isdigit():
+                    idx = int(raw) - 1
+                    if 0 <= idx < len(recent_projects):
+                        project = recent_projects[idx]
+                    else:
+                        typer.echo("  Invalid selection, skipping block.")
+                        continue
+                elif raw:
+                    project = raw
+                else:
+                    project = last_project or ""
+            else:
+                project = typer.prompt("  Project (client::project)").strip()
+
+            if not project:
+                typer.echo("  No project entered, skipping block.")
+                continue
+
+            # Description
+            default_desc = suggested_title or ""
+            description = typer.prompt("  Description", default=default_desc).strip()
+            if not description:
+                typer.echo("  No description entered, skipping block.")
+                continue
+
+            # Write to bartib
+            try:
+                append_bartib_entry(project, description, b_start, b_end)
+                typer.echo(
+                    f"  ✓ Added {b_start.strftime('%H:%M')} – {b_end.strftime('%H:%M')}  "
+                    f"{project}  {description}"
+                )
+                last_project = project
+                filled_count += 1
+            except RuntimeError as e:
+                typer.echo(f"  ❌ {e}")
+
+        typer.echo("")
+
+    typer.echo(f"Done. Added {filled_count} entr{'y' if filled_count == 1 else 'ies'}.")
 
 
 @time_app.command("stats")
@@ -1778,6 +2229,7 @@ def meeting_start(
     project: str = typer.Option("", "--project", "-p", help="Project (overrides definition)"),
     client: str = typer.Option("", "--client", "-c", help="Client (overrides definition)"),
     tags: str = typer.Option("", "--tags", "-t", help="Comma-separated tags (overrides)"),
+    focus: bool = typer.Option(True, "--focus/--no-focus", help="Start Raycast Focus session"),
 ):
     """Start tracking a meeting. NAME is an alias or an ad-hoc description."""
     try:
@@ -1821,7 +2273,8 @@ def meeting_start(
             started_at=datetime.now(),
         )
 
-        start_focus_session(description)
+        if focus:
+            start_focus_session(description)
         typer.echo(f"▶️  Meeting: {description}")
         typer.echo(f"   📁 {bartib_project}")
         if definition:

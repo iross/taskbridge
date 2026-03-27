@@ -12,6 +12,13 @@ def test_db(tmp_path):
     return Database(str(tmp_path / "test.db"))
 
 
+@pytest.fixture
+def bartib_file(tmp_path):
+    """Write a temporary bartib activity file and point BARTIB_FILE at it."""
+    path = tmp_path / "activities.bartib"
+    return path
+
+
 # ============================================================================
 # parse_project_segments
 # ============================================================================
@@ -229,3 +236,79 @@ class TestGetTrackingInRange:
             datetime(2026, 2, 25, 0, 0), datetime(2026, 2, 26, 0, 0)
         )
         assert records == []
+
+
+# ============================================================================
+# parse_bartib_file
+# ============================================================================
+
+
+class TestParseBartibFile:
+    def _write(self, path, lines):
+        path.write_text("\n".join(lines) + "\n")
+
+    def test_completed_session_parsed(self, bartib_file, monkeypatch):
+        from taskbridge.main import parse_bartib_file
+
+        self._write(
+            bartib_file,
+            ["2026-02-25 09:00 - 2026-02-25 10:00 | CHTC::NAIRR | Write-up"],
+        )
+        monkeypatch.setenv("BARTIB_FILE", str(bartib_file))
+
+        records = parse_bartib_file(datetime(2026, 2, 25, 0, 0), datetime(2026, 2, 26, 0, 0))
+
+        assert len(records) == 1
+        assert records[0].project_name == "CHTC::NAIRR"
+        assert records[0].task_name == "Write-up"
+        assert records[0].started_at == datetime(2026, 2, 25, 9, 0)
+        assert records[0].stopped_at == datetime(2026, 2, 25, 10, 0)
+
+    def test_active_session_has_no_stopped_at(self, bartib_file, monkeypatch):
+        from taskbridge.main import parse_bartib_file
+
+        self._write(bartib_file, ["2026-02-25 09:00 | CHTC::NAIRR | Write-up"])
+        monkeypatch.setenv("BARTIB_FILE", str(bartib_file))
+
+        records = parse_bartib_file(datetime(2026, 2, 25, 0, 0), datetime(2026, 2, 26, 0, 0))
+
+        assert len(records) == 1
+        assert records[0].stopped_at is None
+
+    def test_records_outside_range_excluded(self, bartib_file, monkeypatch):
+        from taskbridge.main import parse_bartib_file
+
+        self._write(
+            bartib_file,
+            [
+                "2026-02-24 09:00 - 2026-02-24 10:00 | CHTC::NAIRR | Yesterday",
+                "2026-02-25 09:00 - 2026-02-25 10:00 | CHTC::NAIRR | Today",
+            ],
+        )
+        monkeypatch.setenv("BARTIB_FILE", str(bartib_file))
+
+        records = parse_bartib_file(datetime(2026, 2, 25, 0, 0), datetime(2026, 2, 26, 0, 0))
+
+        assert len(records) == 1
+        assert records[0].task_name == "Today"
+
+    def test_to_bound_exclusive(self, bartib_file, monkeypatch):
+        from taskbridge.main import parse_bartib_file
+
+        self._write(
+            bartib_file,
+            ["2026-02-26 00:00 - 2026-02-26 01:00 | CHTC::NAIRR | Next day"],
+        )
+        monkeypatch.setenv("BARTIB_FILE", str(bartib_file))
+
+        records = parse_bartib_file(datetime(2026, 2, 25, 0, 0), datetime(2026, 2, 26, 0, 0))
+
+        assert records == []
+
+    def test_missing_bartib_file_env_raises(self, monkeypatch):
+        from taskbridge.main import parse_bartib_file
+
+        monkeypatch.delenv("BARTIB_FILE", raising=False)
+
+        with pytest.raises(RuntimeError, match="BARTIB_FILE"):
+            parse_bartib_file(datetime(2026, 2, 25, 0, 0), datetime(2026, 2, 26, 0, 0))
