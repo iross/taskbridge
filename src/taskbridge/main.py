@@ -2034,12 +2034,14 @@ def time_fill(
         overlapping = [ev for ev in cal_events if ev.start < gap_end_dt and ev.end > gap_start_dt]
         if overlapping:
             typer.echo("  Calendar events:")
-            for ev in overlapping:
+            letters = "abcdefghijklmnopqrstuvwxyz"
+            for i, ev in enumerate(overlapping):
                 ev_s = max(ev.start, gap_start_dt)
                 ev_e = min(ev.end, gap_end_dt)
                 ev_mins = int((ev_e - ev_s).total_seconds() / 60)
+                label = letters[i] if i < len(letters) else str(i + 1)
                 typer.echo(
-                    f"    • {ev.title:<40} "
+                    f"    {label}) {ev.title:<38} "
                     f"{ev.start.strftime('%H:%M')} – {ev.end.strftime('%H:%M')} "
                     f"({ev_mins}m)"
                 )
@@ -2061,7 +2063,29 @@ def time_fill(
 
         # Build list of sub-blocks to fill
         if choice == "s" and overlapping:
-            blocks = split_gap_by_events(gap_start_dt, gap_end_dt, overlapping)
+            # Let the user pick which events to include in the split
+            letters = "abcdefghijklmnopqrstuvwxyz"
+            all_labels = [
+                letters[i] if i < len(letters) else str(i + 1) for i in range(len(overlapping))
+            ]
+            raw_sel = (
+                typer.prompt(
+                    f"  Use events ({', '.join(all_labels)}) — enter letters or 'all'",
+                    default="all",
+                )
+                .strip()
+                .lower()
+            )
+            if raw_sel == "all":
+                selected_events = overlapping
+            else:
+                chosen = {c.strip() for c in raw_sel.replace(",", " ").split()}
+                selected_events = [
+                    ev
+                    for i, ev in enumerate(overlapping)
+                    if (letters[i] if i < len(letters) else str(i + 1)) in chosen
+                ]
+            blocks = split_gap_by_events(gap_start_dt, gap_end_dt, selected_events)
         else:
             blocks = [(gap_start_dt, gap_end_dt, None)]
 
