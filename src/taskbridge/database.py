@@ -32,6 +32,17 @@ class TodoistNoteMapping:
 
 
 @dataclass
+class JiraSyncRecord:
+    """Record linking a Jira issue to the Todoist task created for it."""
+
+    id: int | None = None
+    jira_issue_key: str = ""
+    todoist_task_id: str = ""
+    jira_summary: str = ""
+    synced_at: datetime | None = None
+
+
+@dataclass
 class TaskTimeTracking:
     """Task time tracking record linking Todoist tasks to bartib activities."""
 
@@ -136,6 +147,25 @@ class Database:
                 """
                 CREATE INDEX IF NOT EXISTS idx_task_time_tracking_stopped_at
                 ON task_time_tracking(stopped_at)
+            """
+            )
+
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS jira_todoist_sync (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    jira_issue_key TEXT UNIQUE NOT NULL,
+                    todoist_task_id TEXT NOT NULL,
+                    jira_summary TEXT NOT NULL DEFAULT '',
+                    synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """
+            )
+
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_jira_sync_issue_key
+                ON jira_todoist_sync(jira_issue_key)
             """
             )
 
@@ -488,6 +518,66 @@ class Database:
 
             conn.commit()
             return cursor.rowcount > 0
+
+    # ============================================================================
+    # Jira Sync Methods
+    # ============================================================================
+
+    def get_jira_sync(self, jira_issue_key: str) -> "JiraSyncRecord | None":
+        """Return the sync record for a Jira issue key, or None if not yet synced."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(
+                "SELECT * FROM jira_todoist_sync WHERE jira_issue_key = ?",
+                (jira_issue_key,),
+            )
+            row = cursor.fetchone()
+            if row:
+                return JiraSyncRecord(
+                    id=row["id"],
+                    jira_issue_key=row["jira_issue_key"],
+                    todoist_task_id=row["todoist_task_id"],
+                    jira_summary=row["jira_summary"],
+                    synced_at=datetime.fromisoformat(row["synced_at"])
+                    if row["synced_at"]
+                    else None,
+                )
+            return None
+
+    def create_jira_sync(
+        self, jira_issue_key: str, todoist_task_id: str, jira_summary: str = ""
+    ) -> int | None:
+        """Record that a Jira issue has been synced to a Todoist task."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO jira_todoist_sync (jira_issue_key, todoist_task_id, jira_summary)
+                VALUES (?, ?, ?)
+                """,
+                (jira_issue_key, todoist_task_id, jira_summary),
+            )
+            conn.commit()
+            return cursor.lastrowid
+
+    def get_all_jira_syncs(self) -> "list[JiraSyncRecord]":
+        """Return all Jira→Todoist sync records."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute("SELECT * FROM jira_todoist_sync ORDER BY synced_at DESC")
+            records = []
+            for row in cursor.fetchall():
+                records.append(
+                    JiraSyncRecord(
+                        id=row["id"],
+                        jira_issue_key=row["jira_issue_key"],
+                        todoist_task_id=row["todoist_task_id"],
+                        jira_summary=row["jira_summary"],
+                        synced_at=datetime.fromisoformat(row["synced_at"])
+                        if row["synced_at"]
+                        else None,
+                    )
+                )
+            return records
 
 
 # Global database instance

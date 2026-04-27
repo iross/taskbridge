@@ -182,6 +182,53 @@ def config_gcal():
         raise typer.Exit(1) from None
 
 
+@config_app.command("jira")
+def config_jira():
+    """Configure Jira Cloud integration settings."""
+    typer.echo("Jira Configuration")
+    typer.echo("=" * 30)
+    typer.echo(
+        "You need a Jira API token.\n"
+        "  1. Go to https://id.atlassian.com/manage-profile/security/api-tokens\n"
+        "  2. Create a token and copy it\n"
+    )
+
+    current_url = config_manager.get_jira_base_url()
+    if current_url:
+        typer.echo(f"Current base URL: {current_url}")
+        if not typer.confirm("Update Jira configuration?"):
+            return
+
+    base_url = typer.prompt(
+        "Jira base URL (e.g. https://company.atlassian.net)",
+        default=current_url or "",
+    )
+    email = typer.prompt(
+        "Atlassian account email",
+        default=config_manager.get_jira_email() or "",
+    )
+    api_token = typer.prompt("Jira API token", hide_input=True)
+
+    typer.echo("\nValidating credentials...")
+    if not config_manager.validate_jira_credentials(base_url, email, api_token):
+        typer.echo("❌ Could not authenticate. Check the URL, email, and token.")
+        raise typer.Exit(1) from None
+
+    current_filter = config_manager.get_jira_project_filter()
+    filter_str = typer.prompt(
+        "Project key filter (comma-separated, e.g. PROJ,OPS) — leave blank for all",
+        default=",".join(current_filter) if current_filter else "",
+    )
+    project_filter = [k.strip().upper() for k in filter_str.split(",") if k.strip()]
+
+    config_manager.set_jira_config(base_url, email, api_token, project_filter)
+    typer.echo("✅ Jira configuration saved")
+    if project_filter:
+        typer.echo(f"   Project filter: {', '.join(project_filter)}")
+    else:
+        typer.echo("   No project filter — all assigned issues will be synced")
+
+
 # ============================================================================
 # TASK COMMANDS
 # ============================================================================
@@ -1311,6 +1358,95 @@ def sync_projects(
     except Exception as e:
         typer.echo(f"❌ Error: {e}")
         raise typer.Exit(1) from None
+
+
+@sync_app.command("jira")
+def sync_jira(
+    dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Preview without creating tasks"),
+    project: list[str] | None = typer.Option(  # noqa: B008
+        None, "--project", "-p", help="Jira project key(s) to sync (overrides config filter)"
+    ),
+    todoist_project_id: str | None = typer.Option(
+        None, "--todoist-project", help="Todoist project ID to add tasks to"
+    ),
+):
+    """Pull open Jira issues assigned to you and create Todoist tasks."""
+    from taskbridge.jira_api import JiraAPI
+
+    base_url = config_manager.get_jira_base_url()
+    email = config_manager.get_jira_email()
+    api_token = config_manager.get_jira_api_token()
+
+    if not (base_url and email and api_token):
+        typer.echo("❌ Jira not configured. Run 'taskbridge config jira' first.")
+        raise typer.Exit(1) from None
+
+    if not config_manager.get_todoist_token():
+        typer.echo("❌ Todoist not configured. Run 'taskbridge config todoist' first.")
+        raise typer.Exit(1) from None
+
+    project_keys = project or config_manager.get_jira_project_filter() or None
+
+    try:
+        jira = JiraAPI(base_url, email, api_token)
+        typer.echo("🔍 Fetching assigned Jira issues...")
+        issues = jira.get_assigned_issues(project_keys=project_keys)
+    except Exception as e:
+        typer.echo(f"❌ Jira error: {e}")
+        raise typer.Exit(1) from None
+
+    if not issues:
+        typer.echo("No open assigned Jira issues found.")
+        return
+
+    typer.echo(f"Found {len(issues)} issue(s)")
+
+    already_synced = {r.jira_issue_key for r in db.get_all_jira_syncs()}
+    new_issues = [i for i in issues if i.key not in already_synced]
+
+    already_count = len(issues) - len(new_issues)
+    typer.echo(f"New to sync: {len(new_issues)}  |  Already synced: {already_count}")
+
+    if not new_issues:
+        typer.echo("✅ All issues already have Todoist tasks.")
+        return
+
+    if dry_run:
+        typer.echo("\n[DRY RUN] Would create tasks for:")
+        typer.echo("-" * 60)
+        for issue in new_issues:
+            typer.echo(f"  [{issue.key}] {issue.summary}")
+            typer.echo(f"    Status: {issue.status}  |  Project: {issue.project_name}")
+        return
+
+    if not typer.confirm(f"\nCreate {len(new_issues)} Todoist task(s)?"):
+        typer.echo("Cancelled.")
+        return
+
+    todoist = TodoistAPI()
+    created = 0
+    failed = 0
+
+    for issue in new_issues:
+        try:
+            content = f"[{issue.key}] {issue.summary}"
+            description = (
+                f"Jira: {issue.url}\n\nStatus: {issue.status}\nProject: {issue.project_name}"
+            )
+            payload: dict = {"content": content, "description": description}
+            if todoist_project_id:
+                payload["project_id"] = todoist_project_id
+
+            task_data = todoist._make_request("POST", "/tasks", json=payload)
+            todoist_task_id = task_data["id"]
+            db.create_jira_sync(issue.key, todoist_task_id, issue.summary)
+            typer.echo(f"  ✅ {content}")
+            created += 1
+        except Exception as e:
+            typer.echo(f"  ❌ [{issue.key}] {issue.summary} — {e}")
+            failed += 1
+
+    typer.echo(f"\n✅ Created: {created}  ❌ Failed: {failed}")
 
 
 # ============================================================================

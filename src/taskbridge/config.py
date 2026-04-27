@@ -140,6 +140,48 @@ class Config:
         self.set("gcal_credentials_path", str(creds_path))
         self.set("gcal_calendar_id", calendar_id)
 
+    def get_jira_base_url(self) -> str | None:
+        """Get Jira Cloud base URL (e.g. https://company.atlassian.net)."""
+        return self.get("jira_base_url")
+
+    def get_jira_email(self) -> str | None:
+        """Get Jira account email used for API auth."""
+        return self.get("jira_email")
+
+    def get_jira_api_token(self) -> str | None:
+        """Get Jira API token."""
+        return self.get("jira_api_token")
+
+    def get_jira_project_filter(self) -> list[str]:
+        """Get optional list of Jira project keys to restrict sync."""
+        return self.get("jira_project_filter", [])
+
+    def set_jira_config(
+        self,
+        base_url: str,
+        email: str,
+        api_token: str,
+        project_filter: list[str] | None = None,
+    ) -> None:
+        """Save Jira connection configuration."""
+        self.set("jira_base_url", base_url.rstrip("/"))
+        self.set("jira_email", email)
+        self.set("jira_api_token", api_token)
+        self.set("jira_project_filter", project_filter or [])
+
+    def validate_jira_credentials(self, base_url: str, email: str, api_token: str) -> bool:
+        """Return True if the Jira credentials authenticate successfully."""
+        try:
+            response = requests.get(
+                f"{base_url.rstrip('/')}/rest/api/3/myself",
+                auth=(email, api_token),
+                headers={"Accept": "application/json"},
+                timeout=10,
+            )
+            return response.status_code == 200
+        except Exception:
+            return False
+
     def get_obsidian_vault_path(self) -> str | os.PathLike[str]:
         """Get Obsidian vault path."""
         return self.get("obsidian_vault_path")
