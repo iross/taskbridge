@@ -1559,7 +1559,7 @@ def sync_jira(
                 continue
             pid, pname = mapping
             try:
-                todoist.update_task(rec.todoist_task_id, project_id=pid)
+                todoist.move_task(rec.todoist_task_id, pid)
                 typer.echo(f"  ✅ Moved: [{rec.jira_issue_key}] {rec.jira_summary} → {pname}")
                 moved += 1
             except Exception as e:

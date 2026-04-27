@@ -59,6 +59,7 @@ class TodoistAPI:
     """Todoist API client."""
 
     BASE_URL = "https://api.todoist.com/api/v1"
+    SYNC_URL = "https://api.todoist.com/api/v1/sync"
 
     def __init__(self, token: str | None = None):
         self.token = token or config_manager.get_todoist_token()
@@ -335,7 +336,6 @@ class TodoistAPI:
                 "due_date",
                 "due_datetime",
                 "assignee_id",
-                "project_id",
             }
             payload = {k: v for k, v in kwargs.items() if k in allowed_fields}
 
@@ -347,6 +347,32 @@ class TodoistAPI:
             return True
         except Exception as e:
             self.logger.error(f"Failed to update task {task_id}: {e}")
+            return False
+
+    def move_task(self, task_id: str, project_id: str) -> bool:
+        """Move a task to a different project via the Sync API."""
+        import uuid
+
+        command = {
+            "type": "item_move",
+            "uuid": str(uuid.uuid4()),
+            "args": {"id": task_id, "project_id": project_id},
+        }
+        try:
+            response = self.session.post(
+                self.SYNC_URL,
+                json={"commands": [command]},
+                timeout=(10, 30),
+            )
+            response.raise_for_status()
+            result = response.json()
+            status = result.get("sync_status", {}).get(command["uuid"])
+            if status != "ok":
+                self.logger.error(f"item_move failed for task {task_id}: {status}")
+                return False
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to move task {task_id}: {e}")
             return False
 
     def close_task(self, task_id: str) -> bool:
