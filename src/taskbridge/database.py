@@ -169,6 +169,17 @@ class Database:
             """
             )
 
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS jira_issue_project_map (
+                    jira_issue_key TEXT PRIMARY KEY,
+                    todoist_project_id TEXT NOT NULL,
+                    todoist_project_name TEXT NOT NULL DEFAULT '',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """
+            )
+
             conn.commit()
 
     def log_sync_action(self, action: str, details: dict[str, Any] | None = None) -> int | None:
@@ -584,6 +595,51 @@ class Database:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute(
                 "DELETE FROM jira_todoist_sync WHERE jira_issue_key = ?",
+                (jira_issue_key,),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    # ============================================================================
+    # Jira Issue → Todoist Project Mapping
+    # ============================================================================
+
+    def get_jira_issue_project(self, jira_issue_key: str) -> "tuple[str, str] | None":
+        """Return (todoist_project_id, todoist_project_name) for a Jira issue, or None."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT todoist_project_id, todoist_project_name "
+                "FROM jira_issue_project_map WHERE jira_issue_key = ?",
+                (jira_issue_key,),
+            ).fetchone()
+            if row:
+                return row["todoist_project_id"], row["todoist_project_name"]
+            return None
+
+    def set_jira_issue_project(
+        self, jira_issue_key: str, todoist_project_id: str, todoist_project_name: str = ""
+    ) -> None:
+        """Persist (or replace) the Todoist project mapping for a Jira issue."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO jira_issue_project_map
+                    (jira_issue_key, todoist_project_id, todoist_project_name)
+                VALUES (?, ?, ?)
+                ON CONFLICT(jira_issue_key) DO UPDATE SET
+                    todoist_project_id = excluded.todoist_project_id,
+                    todoist_project_name = excluded.todoist_project_name
+                """,
+                (jira_issue_key, todoist_project_id, todoist_project_name),
+            )
+            conn.commit()
+
+    def delete_jira_issue_project(self, jira_issue_key: str) -> bool:
+        """Remove the Todoist project mapping for a Jira issue."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                "DELETE FROM jira_issue_project_map WHERE jira_issue_key = ?",
                 (jira_issue_key,),
             )
             conn.commit()

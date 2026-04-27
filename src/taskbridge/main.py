@@ -1112,6 +1112,73 @@ def map_update(
         raise typer.Exit(1) from None
 
 
+@map_app.command("jira")
+def map_jira(
+    issue_key: str = typer.Argument(..., help="Jira issue key, e.g. HTML-37"),
+):
+    """Map a Jira issue to a Todoist project."""
+    if not config_manager.get_todoist_token():
+        typer.echo("❌ Todoist not configured. Run 'taskbridge config todoist' first.")
+        raise typer.Exit(1) from None
+
+    issue_key = issue_key.upper()
+
+    try:
+        todoist = TodoistAPI()
+        projects = todoist.get_projects()
+    except Exception as e:
+        typer.echo(f"❌ Failed to fetch Todoist projects: {e}")
+        raise typer.Exit(1) from None
+
+    current = db.get_jira_issue_project(issue_key)
+    if current:
+        typer.echo(f"Current mapping: {issue_key} → {current[1]} (ID: {current[0]})")
+
+    active = [p for p in projects if not p.is_inbox_project and not p.is_team_inbox]
+    active.sort(key=lambda p: p.name)
+
+    typer.echo(f"\nSelect a Todoist project for {issue_key}:")
+    typer.echo("-" * 50)
+    for i, proj in enumerate(active, 1):
+        marker = " ◀ current" if current and proj.id == current[0] else ""
+        typer.echo(f"  {i:2}. {proj.name}{marker}")
+    typer.echo(f"  {'N':>2}. Create new project")
+    typer.echo(f"  {'X':>2}. Remove mapping")
+
+    choice = typer.prompt("\nChoice").strip()
+
+    if choice.upper() == "X":
+        if db.delete_jira_issue_project(issue_key):
+            typer.echo(f"✅ Mapping for {issue_key} removed.")
+        else:
+            typer.echo("No mapping found to remove.")
+        return
+
+    if choice.upper() == "N":
+        new_name = typer.prompt("New project name")
+        try:
+            project_data = todoist._make_request("POST", "/projects", json={"name": new_name})
+            project_id = project_data["id"]
+            project_name = project_data["name"]
+        except Exception as e:
+            typer.echo(f"❌ Failed to create project: {e}")
+            raise typer.Exit(1) from None
+    else:
+        try:
+            idx = int(choice) - 1
+        except ValueError:
+            typer.echo("❌ Invalid choice.")
+            raise typer.Exit(1) from None
+        if idx < 0 or idx >= len(active):
+            typer.echo("❌ Out of range.")
+            raise typer.Exit(1) from None
+        project_id = active[idx].id
+        project_name = active[idx].name
+
+    db.set_jira_issue_project(issue_key, project_id, project_name)
+    typer.echo(f"✅ {issue_key} → {project_name}")
+
+
 # ============================================================================
 # SYNC COMMANDS
 # ============================================================================
@@ -1415,13 +1482,21 @@ def sync_jira(
         f"To close: {len(to_close)}"
     )
 
+    def _resolve_project_id(issue_key: str) -> str | None:
+        mapping = db.get_jira_issue_project(issue_key)
+        if mapping:
+            return mapping[0]
+        return todoist_project_id
+
     if dry_run:
         if new_issues:
             typer.echo("\n[DRY RUN] Would create tasks for:")
             typer.echo("-" * 60)
             for issue in new_issues:
+                mapping = db.get_jira_issue_project(issue.key)
+                dest = mapping[1] if mapping else (todoist_project_id or "default inbox")
                 typer.echo(f"  [{issue.key}] {issue.summary}")
-                typer.echo(f"    Status: {issue.status}  |  Project: {issue.project_name}")
+                typer.echo(f"    Status: {issue.status}  |  Todoist project: {dest}")
         if to_close:
             typer.echo("\n[DRY RUN] Would close Todoist tasks for:")
             typer.echo("-" * 60)
@@ -1447,8 +1522,9 @@ def sync_jira(
                         f"Status: {issue.status}\nProject: {issue.project_name}"
                     )
                     payload: dict = {"content": content, "description": description}
-                    if todoist_project_id:
-                        payload["project_id"] = todoist_project_id
+                    pid = _resolve_project_id(issue.key)
+                    if pid:
+                        payload["project_id"] = pid
 
                     task_data = todoist._make_request("POST", "/tasks", json=payload)
                     db.create_jira_sync(issue.key, task_data["id"], issue.summary)
