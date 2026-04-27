@@ -579,6 +579,16 @@ class Database:
                 )
             return records
 
+    def delete_jira_sync(self, jira_issue_key: str) -> bool:
+        """Remove the sync record for a Jira issue."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                "DELETE FROM jira_todoist_sync WHERE jira_issue_key = ?",
+                (jira_issue_key,),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
 
 # Global database instance
 db = Database()

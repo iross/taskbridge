@@ -1370,7 +1370,7 @@ def sync_jira(
         None, "--todoist-project", help="Todoist project ID to add tasks to"
     ),
 ):
-    """Pull open Jira issues assigned to you and create Todoist tasks."""
+    """Pull open Jira issues assigned to you and create/close Todoist tasks."""
     from taskbridge.jira_api import JiraAPI
 
     base_url = config_manager.get_jira_base_url()
@@ -1395,58 +1395,88 @@ def sync_jira(
         typer.echo(f"❌ Jira error: {e}")
         raise typer.Exit(1) from None
 
-    if not issues:
-        typer.echo("No open assigned Jira issues found.")
-        return
+    open_keys = {i.key for i in issues}
+    all_syncs = db.get_all_jira_syncs()
 
-    typer.echo(f"Found {len(issues)} issue(s)")
+    # Only check for closures within the filtered project scope.
+    # Issue keys are prefixed with the project key (e.g. PROJ-123 → PROJ).
+    if project_keys:
+        scoped_syncs = [r for r in all_syncs if r.jira_issue_key.split("-")[0] in project_keys]
+    else:
+        scoped_syncs = all_syncs
 
-    already_synced = {r.jira_issue_key for r in db.get_all_jira_syncs()}
-    new_issues = [i for i in issues if i.key not in already_synced]
-
+    to_close = [r for r in scoped_syncs if r.jira_issue_key not in open_keys]
+    new_issues = [i for i in issues if i.key not in {r.jira_issue_key for r in all_syncs}]
     already_count = len(issues) - len(new_issues)
-    typer.echo(f"New to sync: {len(new_issues)}  |  Already synced: {already_count}")
 
-    if not new_issues:
-        typer.echo("✅ All issues already have Todoist tasks.")
-        return
+    typer.echo(
+        f"Found {len(issues)} open issue(s)  |  "
+        f"New: {len(new_issues)}  |  Already synced: {already_count}  |  "
+        f"To close: {len(to_close)}"
+    )
 
     if dry_run:
-        typer.echo("\n[DRY RUN] Would create tasks for:")
-        typer.echo("-" * 60)
-        for issue in new_issues:
-            typer.echo(f"  [{issue.key}] {issue.summary}")
-            typer.echo(f"    Status: {issue.status}  |  Project: {issue.project_name}")
-        return
-
-    if not typer.confirm(f"\nCreate {len(new_issues)} Todoist task(s)?"):
-        typer.echo("Cancelled.")
+        if new_issues:
+            typer.echo("\n[DRY RUN] Would create tasks for:")
+            typer.echo("-" * 60)
+            for issue in new_issues:
+                typer.echo(f"  [{issue.key}] {issue.summary}")
+                typer.echo(f"    Status: {issue.status}  |  Project: {issue.project_name}")
+        if to_close:
+            typer.echo("\n[DRY RUN] Would close Todoist tasks for:")
+            typer.echo("-" * 60)
+            for rec in to_close:
+                typer.echo(f"  [{rec.jira_issue_key}] {rec.jira_summary}")
         return
 
     todoist = TodoistAPI()
     created = 0
-    failed = 0
+    create_failed = 0
+    closed = 0
+    close_failed = 0
 
-    for issue in new_issues:
-        try:
-            content = f"[{issue.key}] {issue.summary}"
-            description = (
-                f"Jira: {issue.url}\n\nStatus: {issue.status}\nProject: {issue.project_name}"
-            )
-            payload: dict = {"content": content, "description": description}
-            if todoist_project_id:
-                payload["project_id"] = todoist_project_id
+    if new_issues:
+        if not typer.confirm(f"\nCreate {len(new_issues)} Todoist task(s)?"):
+            typer.echo("Skipping task creation.")
+        else:
+            for issue in new_issues:
+                try:
+                    content = f"[{issue.key}] {issue.summary}"
+                    description = (
+                        f"Jira: {issue.url}\n\n"
+                        f"Status: {issue.status}\nProject: {issue.project_name}"
+                    )
+                    payload: dict = {"content": content, "description": description}
+                    if todoist_project_id:
+                        payload["project_id"] = todoist_project_id
 
-            task_data = todoist._make_request("POST", "/tasks", json=payload)
-            todoist_task_id = task_data["id"]
-            db.create_jira_sync(issue.key, todoist_task_id, issue.summary)
-            typer.echo(f"  ✅ {content}")
-            created += 1
-        except Exception as e:
-            typer.echo(f"  ❌ [{issue.key}] {issue.summary} — {e}")
-            failed += 1
+                    task_data = todoist._make_request("POST", "/tasks", json=payload)
+                    db.create_jira_sync(issue.key, task_data["id"], issue.summary)
+                    typer.echo(f"  ✅ Created: {content}")
+                    created += 1
+                except Exception as e:
+                    typer.echo(f"  ❌ [{issue.key}] {issue.summary} — {e}")
+                    create_failed += 1
 
-    typer.echo(f"\n✅ Created: {created}  ❌ Failed: {failed}")
+    if to_close:
+        typer.echo(f"\nClosing {len(to_close)} Todoist task(s) for resolved Jira issues...")
+        for rec in to_close:
+            try:
+                todoist.close_task(rec.todoist_task_id)
+                db.delete_jira_sync(rec.jira_issue_key)
+                typer.echo(f"  ✅ Closed: [{rec.jira_issue_key}] {rec.jira_summary}")
+                closed += 1
+            except Exception as e:
+                typer.echo(f"  ❌ [{rec.jira_issue_key}] {rec.jira_summary} — {e}")
+                close_failed += 1
+
+    if created or create_failed or closed or close_failed:
+        typer.echo(
+            f"\nCreated: {created}  Failed: {create_failed}  "
+            f"Closed: {closed}  Close failed: {close_failed}"
+        )
+    else:
+        typer.echo("✅ Nothing to do.")
 
 
 # ============================================================================
