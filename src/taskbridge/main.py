@@ -1473,13 +1473,21 @@ def sync_jira(
         scoped_syncs = all_syncs
 
     to_close = [r for r in scoped_syncs if r.jira_issue_key not in open_keys]
-    new_issues = [i for i in issues if i.key not in {r.jira_issue_key for r in all_syncs}]
+    synced_keys = {r.jira_issue_key for r in all_syncs}
+    new_issues = [i for i in issues if i.key not in synced_keys]
     already_count = len(issues) - len(new_issues)
+
+    # Already-synced issues that have a per-issue project mapping — move them.
+    to_move = [
+        r
+        for r in all_syncs
+        if r.jira_issue_key in open_keys and db.get_jira_issue_project(r.jira_issue_key)
+    ]
 
     typer.echo(
         f"Found {len(issues)} open issue(s)  |  "
         f"New: {len(new_issues)}  |  Already synced: {already_count}  |  "
-        f"To close: {len(to_close)}"
+        f"To move: {len(to_move)}  |  To close: {len(to_close)}"
     )
 
     def _resolve_project_id(issue_key: str) -> str | None:
@@ -1497,6 +1505,13 @@ def sync_jira(
                 dest = mapping[1] if mapping else (todoist_project_id or "default inbox")
                 typer.echo(f"  [{issue.key}] {issue.summary}")
                 typer.echo(f"    Status: {issue.status}  |  Todoist project: {dest}")
+        if to_move:
+            typer.echo("\n[DRY RUN] Would move tasks to mapped projects:")
+            typer.echo("-" * 60)
+            for rec in to_move:
+                mapping = db.get_jira_issue_project(rec.jira_issue_key)
+                if mapping:
+                    typer.echo(f"  [{rec.jira_issue_key}] {rec.jira_summary} → {mapping[1]}")
         if to_close:
             typer.echo("\n[DRY RUN] Would close Todoist tasks for:")
             typer.echo("-" * 60)
@@ -1507,6 +1522,8 @@ def sync_jira(
     todoist = TodoistAPI()
     created = 0
     create_failed = 0
+    moved = 0
+    move_failed = 0
     closed = 0
     close_failed = 0
 
@@ -1534,6 +1551,21 @@ def sync_jira(
                     typer.echo(f"  ❌ [{issue.key}] {issue.summary} — {e}")
                     create_failed += 1
 
+    if to_move:
+        typer.echo(f"\nMoving {len(to_move)} task(s) to mapped projects...")
+        for rec in to_move:
+            mapping = db.get_jira_issue_project(rec.jira_issue_key)
+            if not mapping:
+                continue
+            pid, pname = mapping
+            try:
+                todoist.update_task(rec.todoist_task_id, project_id=pid)
+                typer.echo(f"  ✅ Moved: [{rec.jira_issue_key}] {rec.jira_summary} → {pname}")
+                moved += 1
+            except Exception as e:
+                typer.echo(f"  ❌ [{rec.jira_issue_key}] {rec.jira_summary} — {e}")
+                move_failed += 1
+
     if to_close:
         typer.echo(f"\nClosing {len(to_close)} Todoist task(s) for resolved Jira issues...")
         for rec in to_close:
@@ -1546,9 +1578,10 @@ def sync_jira(
                 typer.echo(f"  ❌ [{rec.jira_issue_key}] {rec.jira_summary} — {e}")
                 close_failed += 1
 
-    if created or create_failed or closed or close_failed:
+    if created or create_failed or moved or move_failed or closed or close_failed:
         typer.echo(
             f"\nCreated: {created}  Failed: {create_failed}  "
+            f"Moved: {moved}  Move failed: {move_failed}  "
             f"Closed: {closed}  Close failed: {close_failed}"
         )
     else:

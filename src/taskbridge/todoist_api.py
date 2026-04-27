@@ -335,6 +335,7 @@ class TodoistAPI:
                 "due_date",
                 "due_datetime",
                 "assignee_id",
+                "project_id",
             }
             payload = {k: v for k, v in kwargs.items() if k in allowed_fields}
 
