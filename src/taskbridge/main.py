@@ -2466,6 +2466,17 @@ def time_stats(
         raise typer.Exit(1) from None
 
 
+@time_app.command("serve")
+def time_serve(
+    port: int = typer.Option(7777, "--port", "-p", help="Port to listen on"),
+    no_browser: bool = typer.Option(False, "--no-browser", help="Don't open browser automatically"),
+):
+    """Start the time tracking web UI."""
+    from .web_ui import run_server
+
+    run_server(port=port, open_browser=not no_browser)
+
+
 # ============================================================================
 # MEETING COMMANDS
 # ============================================================================

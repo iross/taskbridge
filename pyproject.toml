@@ -108,6 +108,7 @@ ignore = []
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
 "tests/**/*.py" = ["ARG", "S101"]  # Allow assert statements and unused args in tests
+"src/taskbridge/web_ui.py" = ["E501"]  # Long lines are inside embedded HTML/CSS/JS strings
 
 [tool.ruff.format]
 quote-style = "double"
