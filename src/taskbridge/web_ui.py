@@ -328,19 +328,31 @@ HTML = """<!DOCTYPE html>
     document.getElementById('desc-list').innerHTML = '';
     if (!val.startsWith('todoist:')) return;
     var projectId = val.slice(8);
-    fetch('/api/tasks?project_id=' + encodeURIComponent(projectId)).then(function(r){ return r.json(); }).then(function(tasks) {
-      for (var i = 0; i < tasks.length; i++) {
+    fetch('/api/tasks?project_id=' + encodeURIComponent(projectId)).then(function(r){ return r.json(); }).then(function(data) {
+      if (!Array.isArray(data)) {
         var opt = document.createElement('option');
-        opt.value = tasks[i].id;
-        opt.textContent = tasks[i].content;
+        opt.textContent = 'Error: ' + (data.error || 'failed to load');
+        opt.disabled = true;
+        taskSel.appendChild(opt);
+        return;
+      }
+      for (var i = 0; i < data.length; i++) {
+        var opt = document.createElement('option');
+        opt.value = data[i].id;
+        opt.textContent = data[i].content;
         taskSel.appendChild(opt);
       }
       var dl = document.getElementById('desc-list');
-      for (var i = 0; i < tasks.length; i++) {
+      for (var i = 0; i < data.length; i++) {
         var opt = document.createElement('option');
-        opt.value = tasks[i].content;
+        opt.value = data[i].content;
         dl.appendChild(opt);
       }
+    }).catch(function(e) {
+      var opt = document.createElement('option');
+      opt.textContent = 'Error: ' + e.message;
+      opt.disabled = true;
+      taskSel.appendChild(opt);
     });
   }
 
@@ -452,12 +464,9 @@ def _get_todoist_projects() -> list[dict]:
 
 
 def _get_todoist_tasks(project_id: str) -> list[dict]:
-    try:
-        api = TodoistAPI()
-        tasks = api.get_tasks(project_id=project_id)
-        return [{"id": t.id, "content": t.content} for t in tasks if not t.is_completed]
-    except Exception:
-        return []
+    api = TodoistAPI()
+    tasks = api.get_tasks(project_id=project_id)
+    return [{"id": t.id, "content": t.content} for t in tasks if not t.is_completed]
 
 
 def _get_recent_bartib_projects(limit: int = 10) -> list[str]:
@@ -591,7 +600,13 @@ class TimeWebHandler(BaseHTTPRequestHandler):
         )
 
     def _handle_tasks(self, project_id: str):
-        self._send_json(_get_todoist_tasks(project_id) if project_id else [])
+        if not project_id:
+            self._send_json([])
+            return
+        try:
+            self._send_json(_get_todoist_tasks(project_id))
+        except Exception as e:
+            self._send_json({"error": str(e)}, 500)
 
     def _handle_start(self, body: dict):
         try:
