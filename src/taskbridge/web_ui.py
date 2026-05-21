@@ -458,7 +458,33 @@ def _get_todoist_projects() -> list[dict]:
     try:
         api = TodoistAPI()
         projects = api.get_projects()
-        return [{"id": p.id, "name": p.name} for p in projects if not p.is_inbox_project]
+
+        children_of: dict[str, list] = {}
+        roots = []
+        for p in projects:
+            if p.is_inbox_project:
+                continue
+            if p.parent_id:
+                children_of.setdefault(p.parent_id, []).append(p)
+            else:
+                roots.append(p)
+
+        roots.sort(key=lambda p: p.order)
+        for kids in children_of.values():
+            kids.sort(key=lambda p: p.order)
+
+        result: list[dict] = []
+
+        def walk(p, ancestors: list[str]) -> None:
+            path = " / ".join([*ancestors, p.name])
+            result.append({"id": p.id, "name": path})
+            for child in children_of.get(p.id, []):
+                walk(child, [*ancestors, p.name])
+
+        for root in roots:
+            walk(root, [])
+
+        return result
     except Exception:
         return []
 
