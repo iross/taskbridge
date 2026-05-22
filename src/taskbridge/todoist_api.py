@@ -323,6 +323,32 @@ class TodoistAPI:
             self.logger.error(f"Failed to create comment on task {task_id}: {e}")
             return False
 
+    def create_task(self, content: str, project_id: str | None = None) -> "TodoistTask":
+        """Create a new task, optionally in a specific project."""
+        payload: dict = {"content": content}
+        if project_id:
+            payload["project_id"] = project_id
+        data = self._make_request("POST", "/tasks", json=payload)
+        return TodoistTask(
+            id=data["id"],
+            content=data["content"],
+            description=data.get("description", ""),
+            project_id=data["project_id"],
+            section_id=data.get("section_id"),
+            parent_id=data.get("parent_id"),
+            order=data.get("order", 0),
+            labels=data.get("labels", []),
+            priority=data.get("priority", 1),
+            due=data.get("due"),
+            url=data.get("url", ""),
+            comment_count=data.get("comment_count", 0),
+            created_at=data.get("created_at", ""),
+            creator_id=data.get("creator_id", ""),
+            assignee_id=data.get("assignee_id"),
+            assigner_id=data.get("assigner_id"),
+            is_completed=data.get("is_completed", False),
+        )
+
     def update_task(self, task_id: str, **kwargs) -> bool:
         """Update a task with the provided fields."""
         try:

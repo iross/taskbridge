@@ -146,6 +146,46 @@ HTML = """<!DOCTYPE html>
     .act-desc { color: var(--text); }
     .activity.running .act-time { color: var(--accent); }
     .activity.running .act-dur { color: var(--accent); }
+    .task-wrap { position: relative; }
+    .task-input-row { display: flex; gap: 6px; }
+    .task-input-row input { flex: 1; }
+    .btn-icon {
+      padding: 7px 13px;
+      background: transparent;
+      color: var(--muted);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 1.1rem;
+      line-height: 1;
+      flex-shrink: 0;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .btn-icon:hover { color: var(--accent); border-color: var(--accent); }
+    .btn-icon:disabled { opacity: 0.4; cursor: default; }
+    .task-dd {
+      display: none;
+      position: absolute;
+      top: 100%; left: 0; right: 0;
+      background: var(--surface);
+      border: 1px solid var(--active-border);
+      border-top: none;
+      border-radius: 0 0 4px 4px;
+      max-height: 220px;
+      overflow-y: auto;
+      z-index: 50;
+    }
+    .task-opt {
+      padding: 7px 10px;
+      cursor: pointer;
+      font-size: 0.83rem;
+      border-bottom: 1px solid rgba(128,128,128,0.1);
+    }
+    .task-opt:last-child { border-bottom: none; }
+    .task-opt:hover, .task-opt.hi { background: var(--active-bg); color: var(--accent); }
+    .task-opt.is-new { color: var(--muted); font-style: italic; }
+    .task-opt.is-new:hover, .task-opt.is-new.hi { background: var(--active-bg); color: var(--accent); }
   </style>
 </head>
 <body>
@@ -169,8 +209,15 @@ HTML = """<!DOCTYPE html>
         <select id="project-select"><option value="">Loading...</option></select>
       </div>
       <div>
-        <label for="task-select">Todoist Task (optional)</label>
-        <select id="task-select"><option value="">— none —</option></select>
+        <label>Todoist Task (optional)</label>
+        <div class="task-wrap">
+          <div class="task-input-row">
+            <input id="task-search" type="text" autocomplete="off" placeholder="Search tasks…">
+            <button id="btn-add-task" class="btn-icon" title="Add as new Todoist task">+</button>
+          </div>
+          <div id="task-dd" class="task-dd"></div>
+        </div>
+        <input type="hidden" id="task-id">
       </div>
     </div>
     <div class="form-full">
@@ -321,46 +368,137 @@ HTML = """<!DOCTYPE html>
     });
   }
 
+  var currentTasks = [];
+  var focusedIdx = -1;
+
   function onProjectChange() {
     var val = document.getElementById('project-select').value;
-    var taskSel = document.getElementById('task-select');
-    taskSel.innerHTML = '<option value="">— none —</option>';
+    currentTasks = []; focusedIdx = -1;
+    document.getElementById('task-search').value = '';
+    document.getElementById('task-id').value = '';
+    closeTaskDd();
     document.getElementById('desc-list').innerHTML = '';
     if (!val.startsWith('todoist:')) return;
     var projectId = val.slice(8);
-    fetch('/api/tasks?project_id=' + encodeURIComponent(projectId)).then(function(r){ return r.json(); }).then(function(data) {
-      if (!Array.isArray(data)) {
-        var opt = document.createElement('option');
-        opt.textContent = 'Error: ' + (data.error || 'failed to load');
-        opt.disabled = true;
-        taskSel.appendChild(opt);
-        return;
-      }
-      for (var i = 0; i < data.length; i++) {
-        var opt = document.createElement('option');
-        opt.value = data[i].id;
-        opt.textContent = data[i].content;
-        taskSel.appendChild(opt);
-      }
-      var dl = document.getElementById('desc-list');
-      for (var i = 0; i < data.length; i++) {
-        var opt = document.createElement('option');
-        opt.value = data[i].content;
-        dl.appendChild(opt);
-      }
-    }).catch(function(e) {
-      var opt = document.createElement('option');
-      opt.textContent = 'Error: ' + e.message;
-      opt.disabled = true;
-      taskSel.appendChild(opt);
-    });
+    fetch('/api/tasks?project_id=' + encodeURIComponent(projectId))
+      .then(function(r){ return r.json(); })
+      .then(function(data) {
+        if (!Array.isArray(data)) {
+          document.getElementById('form-err').textContent = 'Tasks: ' + (data.error || 'failed to load');
+          return;
+        }
+        currentTasks = data;
+        var dl = document.getElementById('desc-list');
+        for (var i = 0; i < data.length; i++) {
+          var opt = document.createElement('option');
+          opt.value = data[i].content;
+          dl.appendChild(opt);
+        }
+      });
   }
 
-  function onTaskChange() {
-    var taskSel = document.getElementById('task-select');
-    if (!taskSel.value) return;
-    var text = taskSel.options[taskSel.selectedIndex].textContent;
-    if (text !== '— none —') document.getElementById('description').value = text;
+  function renderTaskDd() {
+    var raw = document.getElementById('task-search').value;
+    var q = raw.toLowerCase();
+    var dd = document.getElementById('task-dd');
+    var matches = q
+      ? currentTasks.filter(function(t) { return t.content.toLowerCase().indexOf(q) !== -1; })
+      : currentTasks.slice();
+    if (!matches.length && !raw) { dd.style.display = 'none'; return; }
+    var html = '';
+    for (var i = 0; i < matches.length; i++) {
+      html += '<div class="task-opt" data-id="' + esc(matches[i].id) +
+        '" data-txt="' + esc(matches[i].content) + '">' + esc(matches[i].content) + '</div>';
+    }
+    if (raw) {
+      html += '<div class="task-opt is-new" data-new="1">+ Add &ldquo;' + esc(raw) + '&rdquo; to Todoist</div>';
+    }
+    dd.innerHTML = html;
+    dd.style.display = 'block';
+    focusedIdx = -1;
+    var opts = dd.querySelectorAll('.task-opt');
+    for (var j = 0; j < opts.length; j++) {
+      (function(opt) {
+        opt.addEventListener('mousedown', function(e) {
+          e.preventDefault();
+          if (opt.getAttribute('data-new')) { addTask(); }
+          else { selectTask(opt.getAttribute('data-id'), opt.getAttribute('data-txt')); }
+        });
+      })(opts[j]);
+    }
+  }
+
+  function closeTaskDd() {
+    document.getElementById('task-dd').style.display = 'none';
+    focusedIdx = -1;
+  }
+
+  function selectTask(id, content) {
+    document.getElementById('task-id').value = id;
+    document.getElementById('task-search').value = content;
+    document.getElementById('description').value = content;
+    closeTaskDd();
+  }
+
+  function onTaskKeydown(e) {
+    var dd = document.getElementById('task-dd');
+    if (dd.style.display === 'none') { renderTaskDd(); return; }
+    var opts = dd.querySelectorAll('.task-opt');
+    if (!opts.length) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      focusedIdx = Math.min(focusedIdx + 1, opts.length - 1);
+      updateFocus(opts);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      focusedIdx = Math.max(focusedIdx - 1, -1);
+      updateFocus(opts);
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (focusedIdx >= 0 && opts[focusedIdx]) {
+        opts[focusedIdx].dispatchEvent(new MouseEvent('mousedown'));
+      } else {
+        var q = document.getElementById('task-search').value.trim();
+        if (q) addTask();
+      }
+    } else if (e.key === 'Escape') {
+      closeTaskDd();
+    }
+  }
+
+  function updateFocus(opts) {
+    for (var i = 0; i < opts.length; i++) {
+      opts[i].classList.toggle('hi', i === focusedIdx);
+    }
+    if (focusedIdx >= 0) opts[focusedIdx].scrollIntoView({block: 'nearest'});
+  }
+
+  function addTask() {
+    var q = document.getElementById('task-search').value.trim();
+    var projectVal = document.getElementById('project-select').value;
+    if (!q) { document.getElementById('task-search').focus(); return; }
+    if (!projectVal.startsWith('todoist:')) {
+      document.getElementById('form-err').textContent = 'Select a Todoist project first to add a task.';
+      return;
+    }
+    var btn = document.getElementById('btn-add-task');
+    btn.disabled = true; btn.textContent = '…';
+    fetch('/api/task/create', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({project_id: projectVal.slice(8), content: q})
+    }).then(function(r){ return r.json(); }).then(function(data) {
+      btn.disabled = false; btn.textContent = '+';
+      if (data.id) {
+        currentTasks.unshift({id: data.id, content: data.content});
+        selectTask(data.id, data.content);
+      } else {
+        document.getElementById('form-err').textContent = 'Failed to add: ' + (data.error || 'unknown');
+      }
+    }).catch(function(e) {
+      btn.disabled = false; btn.textContent = '+';
+      document.getElementById('form-err').textContent = 'Error: ' + e.message;
+    });
   }
 
   function startTracking() {
@@ -369,7 +507,7 @@ HTML = """<!DOCTYPE html>
     var description = document.getElementById('description').value.trim();
     if (!description) { errEl.textContent = 'Description is required'; return; }
     var projectVal = document.getElementById('project-select').value;
-    var taskId = document.getElementById('task-select').value;
+    var taskId = document.getElementById('task-id').value;
     var body = {description: description};
     if (projectVal.startsWith('todoist:')) body.project_id = projectVal.slice(8);
     else if (projectVal.startsWith('bartib:')) body.project_raw = projectVal.slice(7);
@@ -378,7 +516,8 @@ HTML = """<!DOCTYPE html>
       .then(function(r){ return r.json(); }).then(function(data) {
         if (data.success) {
           document.getElementById('description').value = '';
-          document.getElementById('task-select').value = '';
+          document.getElementById('task-search').value = '';
+          document.getElementById('task-id').value = '';
           refreshStatus();
         } else {
           errEl.textContent = data.error || 'Failed to start';
@@ -392,7 +531,17 @@ HTML = """<!DOCTYPE html>
   }
 
   document.getElementById('project-select').addEventListener('change', onProjectChange);
-  document.getElementById('task-select').addEventListener('change', onTaskChange);
+  document.getElementById('task-search').addEventListener('focus', renderTaskDd);
+  document.getElementById('task-search').addEventListener('input', function() {
+    document.getElementById('task-id').value = '';
+    renderTaskDd();
+  });
+  document.getElementById('task-search').addEventListener('keydown', onTaskKeydown);
+  document.getElementById('btn-add-task').addEventListener('click', addTask);
+  document.addEventListener('mousedown', function(e) {
+    var wrap = document.querySelector('.task-wrap');
+    if (wrap && !wrap.contains(e.target)) closeTaskDd();
+  });
 
   refreshStatus();
   loadProjects();
@@ -585,6 +734,8 @@ class TimeWebHandler(BaseHTTPRequestHandler):
             self._handle_start(body)
         elif path == "/api/stop":
             self._handle_stop()
+        elif path == "/api/task/create":
+            self._handle_task_create(body)
         else:
             self.send_response(404)
             self.end_headers()
@@ -674,6 +825,19 @@ class TimeWebHandler(BaseHTTPRequestHandler):
 
         except Exception as e:
             self._send_json({"success": False, "error": str(e)}, 500)
+
+    def _handle_task_create(self, body: dict):
+        content = body.get("content", "").strip()
+        project_id = body.get("project_id", "")
+        if not content:
+            self._send_json({"error": "Content required"}, 400)
+            return
+        try:
+            api = TodoistAPI()
+            task = api.create_task(content=content, project_id=project_id or None)
+            self._send_json({"id": task.id, "content": task.content})
+        except Exception as e:
+            self._send_json({"error": str(e)}, 500)
 
     def _handle_stop(self):
         active = db.get_active_tracking()
