@@ -109,7 +109,7 @@ HTML = """<!DOCTYPE html>
     .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
     .form-full { margin-bottom: 12px; }
     label { display: block; font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); margin-bottom: 4px; }
-    select, input[type="text"] {
+    select, input[type="text"], input[type="datetime-local"] {
       width: 100%;
       background: var(--input-bg);
       color: var(--text);
@@ -134,22 +134,39 @@ HTML = """<!DOCTYPE html>
       border-bottom: 1px solid var(--border);
       margin-bottom: 6px;
     }
+    .activity-wrap { border-bottom: 1px solid rgba(255,255,255,0.04); }
+    .activity-wrap:last-child { border-bottom: none; }
     .activity {
       display: grid;
       grid-template-columns: 110px 60px 1fr;
       gap: 10px;
       padding: 5px 0;
       font-size: 0.83rem;
-      border-bottom: 1px solid rgba(255,255,255,0.04);
       align-items: start;
+      cursor: pointer;
+      border-radius: 3px;
     }
-    .activity:last-child { border-bottom: none; }
+    .activity:hover { background: rgba(128,128,128,0.06); }
+    .activity.editing { background: rgba(128,128,128,0.06); }
     .act-time { color: var(--muted); font-size: 0.78rem; line-height: 1.4; }
     .act-dur { color: var(--muted); font-size: 0.78rem; }
     .act-project { color: var(--accent); font-size: 0.78rem; margin-bottom: 1px; }
     .act-desc { color: var(--text); }
     .activity.running .act-time { color: var(--accent); }
     .activity.running .act-dur { color: var(--accent); }
+    .activity-edit {
+      display: none;
+      padding: 10px 12px 12px;
+      border-top: 1px solid var(--border);
+      background: var(--input-bg);
+      border-radius: 0 0 4px 4px;
+    }
+    .edit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
+    .edit-actions { display: flex; gap: 8px; align-items: center; }
+    .btn-save { background: var(--accent); color: #111; }
+    .btn-del { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
+    .btn-cancel { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+    .edit-err { color: var(--danger); font-size: 0.78rem; margin-left: 4px; }
     .task-wrap { position: relative; }
     .task-input-row { display: flex; gap: 6px; }
     .task-input-row input { flex: 1; }
@@ -335,11 +352,29 @@ HTML = """<!DOCTYPE html>
         var a = g.items[j];
         var endT = a.stopped_at ? fmtTime(a.stopped_at) : '···';
         var durS = a.duration_seconds ? fmtDur(a.duration_seconds) : '···';
-        html += '<div class="activity' + (a.active ? ' running' : '') + '">' +
-          '<span class="act-time">' + fmtTime(a.started_at) + '–' + endT + '</span>' +
-          '<span class="act-dur">' + durS + '</span>' +
-          '<div><div class="act-project">' + esc(a.project) + '</div>' +
-          '<div class="act-desc">' + esc(a.description) + '</div></div>' +
+        var stopInput = a.active ? '<div></div>' :
+          '<div><label>End</label><input type="datetime-local" name="new_stopped_at" value="' + esc(a.stopped_at.slice(0,16)) + '"></div>';
+        html += '<div class="activity-wrap">' +
+          '<div class="activity' + (a.active ? ' running' : '') + '" onclick="toggleEdit(this)" data-key="' + esc(a.started_at) + '">' +
+            '<span class="act-time">' + fmtTime(a.started_at) + '–' + endT + '</span>' +
+            '<span class="act-dur">' + durS + '</span>' +
+            '<div><div class="act-project">' + esc(a.project) + '</div>' +
+            '<div class="act-desc">' + esc(a.description) + '</div></div>' +
+          '</div>' +
+          '<div class="activity-edit" data-key="' + esc(a.started_at) + '">' +
+            '<div class="edit-grid">' +
+              '<div><label>Start</label><input type="datetime-local" name="new_started_at" value="' + esc(a.started_at.slice(0,16)) + '"></div>' +
+              stopInput +
+              '<div><label>Project</label><input type="text" name="project" value="' + esc(a.project) + '"></div>' +
+              '<div><label>Description</label><input type="text" name="description" value="' + esc(a.description) + '"></div>' +
+            '</div>' +
+            '<div class="edit-actions">' +
+              '<button class="btn btn-save" onclick="saveEdit(this)">Save</button>' +
+              '<button class="btn btn-del" onclick="deleteActivity(this)">Delete</button>' +
+              '<button class="btn btn-cancel" onclick="cancelEdit(this)">Cancel</button>' +
+              '<span class="edit-err"></span>' +
+            '</div>' +
+          '</div>' +
           '</div>';
       }
       html += '</div>';
@@ -546,6 +581,52 @@ HTML = """<!DOCTYPE html>
       .then(function(){ refreshStatus(); });
   }
 
+  function toggleEdit(row) {
+    var editDiv = row.parentElement.querySelector('.activity-edit');
+    var isOpen = editDiv.style.display === 'block';
+    document.querySelectorAll('.activity-edit').forEach(function(d) { d.style.display = 'none'; });
+    document.querySelectorAll('.activity.editing').forEach(function(r) { r.classList.remove('editing'); });
+    if (!isOpen) {
+      editDiv.style.display = 'block';
+      row.classList.add('editing');
+    }
+  }
+
+  function saveEdit(btn) {
+    var editDiv = btn.closest('.activity-edit');
+    var errEl = editDiv.querySelector('.edit-err');
+    errEl.textContent = '';
+    var stopInput = editDiv.querySelector('[name=new_stopped_at]');
+    var body = {
+      original_started_at: editDiv.getAttribute('data-key'),
+      new_started_at: editDiv.querySelector('[name=new_started_at]').value,
+      new_stopped_at: stopInput ? stopInput.value : '',
+      project: editDiv.querySelector('[name=project]').value.trim(),
+      description: editDiv.querySelector('[name=description]').value.trim()
+    };
+    fetch('/api/activity/edit', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
+      .then(function(r){ return r.json(); }).then(function(data) {
+        if (data.success) { refreshStatus(); }
+        else { errEl.textContent = data.error || 'Save failed'; }
+      }).catch(function() { errEl.textContent = 'Network error'; });
+  }
+
+  function deleteActivity(btn) {
+    if (!confirm('Delete this entry?')) return;
+    var editDiv = btn.closest('.activity-edit');
+    fetch('/api/activity/delete', {method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({original_started_at: editDiv.getAttribute('data-key')})})
+      .then(function(r){ return r.json(); }).then(function(data) {
+        if (data.success) refreshStatus();
+      });
+  }
+
+  function cancelEdit(btn) {
+    var editDiv = btn.closest('.activity-edit');
+    editDiv.style.display = 'none';
+    editDiv.closest('.activity-wrap').querySelector('.activity').classList.remove('editing');
+  }
+
   document.getElementById('project-select').addEventListener('change', onProjectChange);
   document.getElementById('task-search').addEventListener('focus', renderTaskDd);
   document.getElementById('task-search').addEventListener('input', function() {
@@ -719,6 +800,83 @@ def _stop_active(tracking) -> None:
             pass
 
 
+def _bartib_key(iso: str) -> str:
+    """Convert an ISO datetime string to bartib file format 'YYYY-MM-DD HH:MM'."""
+    return datetime.fromisoformat(iso).strftime("%Y-%m-%d %H:%M")
+
+
+def _edit_bartib_line(
+    original_started_at: str,
+    new_started_at: str,
+    new_stopped_at: str,
+    project: str,
+    description: str,
+) -> bool:
+    bartib_file = os.environ.get("BARTIB_FILE", "")
+    if not bartib_file:
+        return False
+    orig_key = _bartib_key(original_started_at)
+    new_start_str = _bartib_key(new_started_at) if new_started_at else orig_key
+    try:
+        with open(bartib_file) as f:
+            lines = f.readlines()
+    except OSError:
+        return False
+    new_lines = []
+    found = False
+    for line in lines:
+        stripped = line.strip()
+        parts = stripped.split(" | ", 2) if stripped else []
+        if len(parts) == 3:
+            time_part = parts[0]
+            line_start = time_part.split(" - ", 1)[0].strip()
+            if line_start == orig_key:
+                found = True
+                if " - " in time_part:
+                    orig_stop = time_part.split(" - ", 1)[1].strip()
+                    stop_str = _bartib_key(new_stopped_at) if new_stopped_at else orig_stop
+                    time_str = f"{new_start_str} - {stop_str}"
+                else:
+                    time_str = new_start_str
+                new_lines.append(f"{time_str} | {project} | {description}\n")
+                continue
+        new_lines.append(line)
+    if not found:
+        return False
+    with open(bartib_file, "w") as f:
+        f.writelines(new_lines)
+    return True
+
+
+def _delete_bartib_line(original_started_at: str) -> bool:
+    bartib_file = os.environ.get("BARTIB_FILE", "")
+    if not bartib_file:
+        return False
+    orig_key = _bartib_key(original_started_at)
+    try:
+        with open(bartib_file) as f:
+            lines = f.readlines()
+    except OSError:
+        return False
+    new_lines = []
+    found = False
+    for line in lines:
+        stripped = line.strip()
+        parts = stripped.split(" | ", 2) if stripped else []
+        if len(parts) == 3:
+            time_part = parts[0]
+            line_start = time_part.split(" - ", 1)[0].strip()
+            if line_start == orig_key:
+                found = True
+                continue
+        new_lines.append(line)
+    if not found:
+        return False
+    with open(bartib_file, "w") as f:
+        f.writelines(new_lines)
+    return True
+
+
 class TimeWebHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):  # noqa: A002
         pass
@@ -752,6 +910,10 @@ class TimeWebHandler(BaseHTTPRequestHandler):
             self._handle_stop()
         elif path == "/api/task/create":
             self._handle_task_create(body)
+        elif path == "/api/activity/edit":
+            self._handle_activity_edit(body)
+        elif path == "/api/activity/delete":
+            self._handle_activity_delete(body)
         else:
             self.send_response(404)
             self.end_headers()
@@ -866,6 +1028,41 @@ class TimeWebHandler(BaseHTTPRequestHandler):
         try:
             _stop_active(active)
             self._send_json({"success": True})
+        except Exception as e:
+            self._send_json({"success": False, "error": str(e)}, 500)
+
+    def _handle_activity_edit(self, body: dict):
+        original = body.get("original_started_at", "").strip()
+        new_start = body.get("new_started_at", "").strip()
+        new_stop = body.get("new_stopped_at", "").strip()
+        project = body.get("project", "").strip()
+        description = body.get("description", "").strip()
+        if not original:
+            self._send_json({"success": False, "error": "original_started_at required"}, 400)
+            return
+        if not description or not project:
+            self._send_json({"success": False, "error": "Project and description required"}, 400)
+            return
+        try:
+            ok = _edit_bartib_line(original, new_start, new_stop, project, description)
+            if ok:
+                self._send_json({"success": True})
+            else:
+                self._send_json({"success": False, "error": "Entry not found"}, 404)
+        except Exception as e:
+            self._send_json({"success": False, "error": str(e)}, 500)
+
+    def _handle_activity_delete(self, body: dict):
+        original = body.get("original_started_at", "").strip()
+        if not original:
+            self._send_json({"success": False, "error": "original_started_at required"}, 400)
+            return
+        try:
+            ok = _delete_bartib_line(original)
+            if ok:
+                self._send_json({"success": True})
+            else:
+                self._send_json({"success": False, "error": "Entry not found"}, 404)
         except Exception as e:
             self._send_json({"success": False, "error": str(e)}, 500)
 
