@@ -417,6 +417,9 @@ HTML = """<!DOCTYPE html>
   }
 
   var currentTasks = [];
+  var allTasks = [];
+  var allTasksLoaded = false;
+  var allTasksLoading = false;
   var focusedIdx = -1;
 
   function onProjectChange() {
@@ -445,13 +448,43 @@ HTML = """<!DOCTYPE html>
       });
   }
 
+  function loadAllTasks() {
+    if (allTasksLoaded || allTasksLoading) return;
+    allTasksLoading = true;
+    var dd = document.getElementById('task-dd');
+    dd.innerHTML = '<div class="task-opt" style="color:var(--muted);font-style:italic">Loading tasks…</div>';
+    dd.style.display = 'block';
+    fetch('/api/tasks')
+      .then(function(r){ return r.json(); })
+      .then(function(data) {
+        allTasksLoading = false;
+        if (Array.isArray(data)) {
+          allTasks = data;
+          allTasksLoaded = true;
+          renderTaskDd();
+        } else {
+          dd.innerHTML = '<div class="task-opt" style="color:var(--danger)">Failed: ' + esc(data.error || 'unknown') + '</div>';
+          dd.style.display = 'block';
+        }
+      })
+      .catch(function() {
+        allTasksLoading = false;
+        dd.innerHTML = '<div class="task-opt" style="color:var(--danger)">Network error</div>';
+        dd.style.display = 'block';
+      });
+  }
+
   function renderTaskDd() {
     var raw = document.getElementById('task-search').value;
     var q = raw.toLowerCase();
     var dd = document.getElementById('task-dd');
+    var projectVal = document.getElementById('project-select').value;
+    var noProject = !projectVal;
+    if (noProject && !allTasksLoaded) { loadAllTasks(); return; }
+    var pool = noProject ? allTasks : currentTasks;
     var matches = q
-      ? currentTasks.filter(function(t) { return t.content.toLowerCase().indexOf(q) !== -1; })
-      : currentTasks.slice();
+      ? pool.filter(function(t) { return t.content.toLowerCase().indexOf(q) !== -1; })
+      : pool.slice(0, 20);
     if (!matches.length && !raw) { dd.style.display = 'none'; return; }
     var html = '';
     for (var i = 0; i < matches.length; i++) {
@@ -737,7 +770,7 @@ def _get_todoist_projects() -> list[dict]:
 
 def _get_todoist_tasks(project_id: str) -> list[dict]:
     api = TodoistAPI()
-    tasks = api.get_tasks(project_id=project_id)
+    tasks = api.get_tasks(project_id=project_id or None)
     return [{"id": t.id, "content": t.content} for t in tasks if not t.is_completed]
 
 
@@ -956,9 +989,6 @@ class TimeWebHandler(BaseHTTPRequestHandler):
         )
 
     def _handle_tasks(self, project_id: str):
-        if not project_id:
-            self._send_json([])
-            return
         try:
             self._send_json(_get_todoist_tasks(project_id))
         except Exception as e:
