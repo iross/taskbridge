@@ -169,6 +169,7 @@ HTML = """<!DOCTYPE html>
     .edit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
     .edit-actions { display: flex; gap: 8px; align-items: center; }
     .btn-save { background: var(--accent); color: #111; }
+    .btn-resume { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
     .btn-del { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
     .btn-cancel { background: transparent; color: var(--muted); border: 1px solid var(--border); }
     .edit-err { color: var(--danger); font-size: 0.78rem; margin-left: 4px; }
@@ -385,6 +386,7 @@ HTML = """<!DOCTYPE html>
             '</div>' +
             '<div class="edit-actions">' +
               '<button class="btn btn-save" onclick="saveEdit(this)">Save</button>' +
+              '<button class="btn btn-resume" onclick="resumeActivity(this)">&#9654; Resume</button>' +
               '<button class="btn btn-del" onclick="deleteActivity(this)">Delete</button>' +
               '<button class="btn btn-cancel" onclick="cancelEdit(this)">Cancel</button>' +
               '<span class="edit-err"></span>' +
@@ -711,6 +713,22 @@ HTML = """<!DOCTYPE html>
     editDiv.closest('.activity-wrap').querySelector('.activity').classList.remove('editing');
   }
 
+  function resumeActivity(btn) {
+    var editDiv = btn.closest('.activity-edit');
+    var errEl = editDiv.querySelector('.edit-err');
+    errEl.textContent = '';
+    var body = {
+      original_started_at: editDiv.getAttribute('data-key'),
+      project: editDiv.querySelector('[name=project]').value.trim(),
+      description: editDiv.querySelector('[name=description]').value.trim()
+    };
+    fetch('/api/activity/resume', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
+      .then(function(r){ return r.json(); }).then(function(data) {
+        if (data.success) { refreshStatus(); cancelEdit(btn); }
+        else { errEl.textContent = data.error || 'Failed'; }
+      }).catch(function() { errEl.textContent = 'Network error'; });
+  }
+
   document.getElementById('project-select').addEventListener('change', onProjectChange);
   document.getElementById('task-search').addEventListener('focus', renderTaskDd);
   document.getElementById('task-search').addEventListener('input', function() {
@@ -1003,6 +1021,8 @@ class TimeWebHandler(BaseHTTPRequestHandler):
             self._handle_activity_edit(body)
         elif path == "/api/activity/delete":
             self._handle_activity_delete(body)
+        elif path == "/api/activity/resume":
+            self._handle_activity_resume(body)
         elif path == "/api/note/create":
             self._handle_note_create()
         elif path == "/api/complete":
@@ -1184,6 +1204,44 @@ class TimeWebHandler(BaseHTTPRequestHandler):
                 self._send_json({"success": True})
             else:
                 self._send_json({"success": False, "error": "Entry not found"}, 404)
+        except Exception as e:
+            self._send_json({"success": False, "error": str(e)}, 500)
+
+    def _handle_activity_resume(self, body: dict):
+        project = body.get("project", "").strip()
+        description = body.get("description", "").strip()
+        original = body.get("original_started_at", "").strip()
+        if not project or not description:
+            self._send_json({"success": False, "error": "Project and description required"}, 400)
+            return
+        try:
+            active = db.get_active_tracking()
+            if active:
+                _stop_active(active)
+
+            # Recover the Todoist task ID from the original DB record (if any)
+            todoist_task_id = ""
+            if original:
+                with contextlib.suppress(Exception):
+                    orig_dt = datetime.fromisoformat(original)
+                    records = db.get_tracking_in_range(
+                        orig_dt - timedelta(seconds=30),
+                        orig_dt + timedelta(seconds=30),
+                    )
+                    for r in records:
+                        if r.todoist_task_id and not r.todoist_task_id.startswith("meeting:"):
+                            todoist_task_id = r.todoist_task_id
+                            break
+
+            bartib = BartibIntegration()
+            bartib.start_tracking(description=description, project=project)
+            db.create_tracking_record(
+                todoist_task_id=todoist_task_id,
+                project_name=project,
+                task_name=description,
+                started_at=datetime.now(),
+            )
+            self._send_json({"success": True})
         except Exception as e:
             self._send_json({"success": False, "error": str(e)}, 500)
 
