@@ -489,7 +489,9 @@ HTML = """<!DOCTYPE html>
     var html = '';
     for (var i = 0; i < matches.length; i++) {
       html += '<div class="task-opt" data-id="' + esc(matches[i].id) +
-        '" data-txt="' + esc(matches[i].content) + '">' + esc(matches[i].content) + '</div>';
+        '" data-txt="' + esc(matches[i].content) +
+        '" data-project-id="' + esc(matches[i].project_id || '') + '">' +
+        esc(matches[i].content) + '</div>';
     }
     if (raw) {
       html += '<div class="task-opt is-new" data-new="1">+ Add &ldquo;' + esc(raw) + '&rdquo; to Todoist</div>';
@@ -503,7 +505,7 @@ HTML = """<!DOCTYPE html>
         opt.addEventListener('mousedown', function(e) {
           e.preventDefault();
           if (opt.getAttribute('data-new')) { addTask(); }
-          else { selectTask(opt.getAttribute('data-id'), opt.getAttribute('data-txt')); }
+          else { selectTask(opt.getAttribute('data-id'), opt.getAttribute('data-txt'), opt.getAttribute('data-project-id')); }
         });
       })(opts[j]);
     }
@@ -514,10 +516,15 @@ HTML = """<!DOCTYPE html>
     focusedIdx = -1;
   }
 
-  function selectTask(id, content) {
+  function selectTask(id, content, projectId) {
     document.getElementById('task-id').value = id;
     document.getElementById('task-search').value = content;
     document.getElementById('description').value = content;
+    if (projectId) {
+      var sel = document.getElementById('project-select');
+      var opt = sel.querySelector('option[value="todoist:' + projectId + '"]');
+      if (opt) sel.value = opt.value;
+    }
     closeTaskDd();
   }
 
@@ -771,7 +778,11 @@ def _get_todoist_projects() -> list[dict]:
 def _get_todoist_tasks(project_id: str) -> list[dict]:
     api = TodoistAPI()
     tasks = api.get_tasks(project_id=project_id or None)
-    return [{"id": t.id, "content": t.content} for t in tasks if not t.is_completed]
+    return [
+        {"id": t.id, "content": t.content, "project_id": t.project_id}
+        for t in tasks
+        if not t.is_completed
+    ]
 
 
 def _get_recent_bartib_projects(limit: int = 10) -> list[str]:
