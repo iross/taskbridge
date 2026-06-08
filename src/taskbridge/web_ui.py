@@ -30,6 +30,7 @@ HTML = """<!DOCTYPE html>
       --danger: #e57373;
       --border: #2e2e2e;
       --input-bg: #252525;
+      --meeting: #5c7cfa;
     }
     @media (prefers-color-scheme: light) {
       :root {
@@ -41,6 +42,7 @@ HTML = """<!DOCTYPE html>
         --muted: #666;
         --border: #ddd;
         --input-bg: #fafafa;
+        --meeting: #3b5bdb;
       }
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -101,6 +103,8 @@ HTML = """<!DOCTYPE html>
     }
     .btn-stop { background: var(--danger); color: #fff; }
     .btn-start { background: var(--accent); color: #111; }
+    .btn-meeting { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+    .btn-meeting.on { background: var(--meeting); color: #fff; border-color: var(--meeting); }
     .btn:hover { opacity: 0.82; }
     .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
     .form-full { margin-bottom: 12px; }
@@ -227,7 +231,10 @@ HTML = """<!DOCTYPE html>
     </div>
     <div class="form-actions">
       <span class="err" id="form-err"></span>
-      <button class="btn btn-start" onclick="startTracking()">&#9654; Start</button>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button id="btn-meeting" class="btn btn-meeting" onclick="toggleMeeting()">&#128197; Meeting</button>
+        <button class="btn btn-start" onclick="startTracking()">&#9654; Start</button>
+      </div>
     </div>
   </div>
 
@@ -237,6 +244,12 @@ HTML = """<!DOCTYPE html>
 <script>
   var startedAt = null;
   var elapsedTimer = null;
+  var isMeeting = false;
+
+  function toggleMeeting() {
+    isMeeting = !isMeeting;
+    document.getElementById('btn-meeting').classList.toggle('on', isMeeting);
+  }
 
   function esc(s) {
     return (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -512,12 +525,15 @@ HTML = """<!DOCTYPE html>
     if (projectVal.startsWith('todoist:')) body.project_id = projectVal.slice(8);
     else if (projectVal.startsWith('bartib:')) body.project_raw = projectVal.slice(7);
     if (taskId) body.todoist_task_id = taskId;
+    if (isMeeting) body.is_meeting = true;
     fetch('/api/start', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
       .then(function(r){ return r.json(); }).then(function(data) {
         if (data.success) {
           document.getElementById('description').value = '';
           document.getElementById('task-search').value = '';
           document.getElementById('task-id').value = '';
+          isMeeting = false;
+          document.getElementById('btn-meeting').classList.remove('on');
           refreshStatus();
         } else {
           errEl.textContent = data.error || 'Failed to start';
@@ -794,7 +810,10 @@ class TimeWebHandler(BaseHTTPRequestHandler):
 
             project_id = body.get("project_id", "")
             project_raw = body.get("project_raw", "")
+            is_meeting = bool(body.get("is_meeting", False))
             todoist_task_id = body.get("todoist_task_id", "")
+            if is_meeting:
+                todoist_task_id = f"meeting:{description}"
 
             active = db.get_active_tracking()
             if active:
