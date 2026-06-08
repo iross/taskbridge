@@ -1,5 +1,6 @@
 """Web UI server for bartib time tracking."""
 
+import contextlib
 import json
 import os
 import re
@@ -9,7 +10,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from .bartib_integration import BartibIntegration
-from .database import db
+from .database import TodoistNoteMapping, db
 from .todoist_api import TodoistAPI
 
 HTML = """<!DOCTYPE html>
@@ -103,6 +104,8 @@ HTML = """<!DOCTYPE html>
     }
     .btn-stop { background: var(--danger); color: #fff; }
     .btn-start { background: var(--accent); color: #111; }
+    .btn-note { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+    .btn-note:hover { color: var(--text); border-color: var(--text); opacity: 1; }
     .btn-meeting { background: transparent; color: var(--muted); border: 1px solid var(--border); }
     .btn-meeting.on { background: var(--meeting); color: #fff; border-color: var(--meeting); }
     .btn:hover { opacity: 0.82; }
@@ -315,6 +318,12 @@ HTML = """<!DOCTYPE html>
     startedAt = new Date(cur.started_at).getTime();
     elapsedTimer = setInterval(updateElapsed, 1000);
     var elapsed = Math.floor((Date.now() - startedAt) / 1000);
+    var noteBtn = '';
+    if (cur.note_url) {
+      noteBtn = '<button class="btn btn-note" data-note-url="' + esc(cur.note_url) + '" onclick="openNote(this)">&#128196; Note</button>';
+    } else if (cur.has_todoist_task) {
+      noteBtn = '<button class="btn btn-note" id="btn-note-create" onclick="createNote(this)">&#128196; Note</button>';
+    }
     content.innerHTML =
       '<div class="current-row">' +
         '<div>' +
@@ -323,7 +332,10 @@ HTML = """<!DOCTYPE html>
           '<div class="current-meta">Started ' + fmtTime(cur.started_at) +
             ' &nbsp;&middot;&nbsp; <span id="elapsed">' + fmtDur(elapsed) + '</span></div>' +
         '</div>' +
-        '<button class="btn btn-stop" onclick="stopTracking()">&#9632; Stop</button>' +
+        '<div style="display:flex;gap:8px;align-items:flex-start">' +
+          noteBtn +
+          '<button class="btn btn-stop" onclick="stopTracking()">&#9632; Stop</button>' +
+        '</div>' +
       '</div>';
   }
 
@@ -619,6 +631,28 @@ HTML = """<!DOCTYPE html>
   function stopTracking() {
     fetch('/api/stop', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'})
       .then(function(){ refreshStatus(); });
+  }
+
+  function openNote(btn) {
+    window.location.href = btn.getAttribute('data-note-url');
+  }
+
+  function createNote(btn) {
+    btn.disabled = true;
+    btn.textContent = '…';
+    fetch('/api/note/create', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'})
+      .then(function(r){ return r.json(); }).then(function(data) {
+        if (data.success) {
+          window.location.href = data.note_url;
+          refreshStatus();
+        } else {
+          btn.disabled = false;
+          btn.textContent = '📄 Note';
+        }
+      }).catch(function() {
+        btn.disabled = false;
+        btn.textContent = '📄 Note';
+      });
   }
 
   function toggleEdit(row) {
@@ -959,6 +993,8 @@ class TimeWebHandler(BaseHTTPRequestHandler):
             self._handle_activity_edit(body)
         elif path == "/api/activity/delete":
             self._handle_activity_delete(body)
+        elif path == "/api/note/create":
+            self._handle_note_create()
         else:
             self.send_response(404)
             self.end_headers()
@@ -985,12 +1021,21 @@ class TimeWebHandler(BaseHTTPRequestHandler):
         current = None
         if active and active.started_at:
             elapsed = int((datetime.now() - active.started_at).total_seconds())
+            task_id = active.todoist_task_id or ""
+            has_todoist_task = bool(task_id and not task_id.startswith("meeting:"))
+            note_url = None
+            if has_todoist_task:
+                mapping = db.get_todoist_note_by_task_id(task_id)
+                if mapping:
+                    note_url = mapping.obsidian_url
             current = {
                 "project": active.project_name,
                 "description": active.task_name,
                 "started_at": active.started_at.isoformat(),
                 "elapsed_seconds": elapsed,
-                "todoist_task_id": active.todoist_task_id,
+                "todoist_task_id": task_id,
+                "has_todoist_task": has_todoist_task,
+                "note_url": note_url,
             }
         self._send_json({"current": current, "activities": activities})
 
@@ -1127,6 +1172,59 @@ class TimeWebHandler(BaseHTTPRequestHandler):
                 self._send_json({"success": True})
             else:
                 self._send_json({"success": False, "error": "Entry not found"}, 404)
+        except Exception as e:
+            self._send_json({"success": False, "error": str(e)}, 500)
+
+    def _handle_note_create(self):
+        active = db.get_active_tracking()
+        if (
+            not active
+            or not active.todoist_task_id
+            or active.todoist_task_id.startswith("meeting:")
+        ):
+            self._send_json({"success": False, "error": "No active Todoist task"}, 400)
+            return
+        try:
+            from .config import config as config_manager
+            from .main import resolve_project_info
+
+            # Return existing note if already mapped
+            existing = db.get_todoist_note_by_task_id(active.todoist_task_id)
+            if existing:
+                self._send_json({"success": True, "note_url": existing.obsidian_url, "new": False})
+                return
+
+            api = TodoistAPI()
+            task = api.get_task(active.todoist_task_id)
+            if not task:
+                self._send_json({"success": False, "error": "Task not found in Todoist"}, 404)
+                return
+
+            project_name, client_name = resolve_project_info(task.project_id, api)
+            note_path = config_manager.create_task_note(
+                project_name=project_name,
+                task_title=task.content,
+                client=client_name,
+                status="backlog",
+                tags=task.labels,
+            )
+            obsidian_url = config_manager.generate_obsidian_url(project_name, note_path.name)
+
+            mapping = TodoistNoteMapping(
+                todoist_task_id=active.todoist_task_id,
+                todoist_project_id=task.project_id,
+                note_path=str(note_path),
+                obsidian_url=obsidian_url,
+            )
+            db.create_todoist_note_mapping(mapping)
+
+            with contextlib.suppress(Exception):
+                api.create_comment(
+                    active.todoist_task_id,
+                    f"📝 Obsidian note: [Open Note]({obsidian_url})",
+                )
+
+            self._send_json({"success": True, "note_url": obsidian_url, "new": True})
         except Exception as e:
             self._send_json({"success": False, "error": str(e)}, 500)
 
