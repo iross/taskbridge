@@ -991,9 +991,12 @@ class TimeWebHandler(BaseHTTPRequestHandler):
                     project_name, client_name = resolve_project_info(project_id, api)
                     bartib_project = _build_bartib_project(project_name, client_name)
                 except Exception:
-                    bartib_project = project_raw or "taskbridge"
+                    bartib_project = project_raw or ("meetings" if is_meeting else "taskbridge")
             else:
-                bartib_project = project_raw or "taskbridge"
+                bartib_project = project_raw or ("meetings" if is_meeting else "taskbridge")
+
+            if is_meeting:
+                bartib_project = f"{bartib_project}::meeting"
 
             bartib.start_tracking(description=description, project=bartib_project)
             db.create_tracking_record(
