@@ -7,6 +7,7 @@ import re
 import webbrowser
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from .bartib_integration import BartibIntegration
@@ -103,6 +104,7 @@ HTML = """<!DOCTYPE html>
       flex-shrink: 0;
     }
     .btn-stop { background: var(--danger); color: #fff; }
+    .btn-complete { background: var(--accent); color: #111; }
     .btn-start { background: var(--accent); color: #111; }
     .btn-note { background: transparent; color: var(--muted); border: 1px solid var(--border); }
     .btn-note:hover { color: var(--text); border-color: var(--text); opacity: 1; }
@@ -334,6 +336,7 @@ HTML = """<!DOCTYPE html>
         '</div>' +
         '<div style="display:flex;gap:8px;align-items:flex-start">' +
           noteBtn +
+          (cur.has_todoist_task ? '<button class="btn btn-complete" onclick="completeTask()">&#10003; Complete</button>' : '') +
           '<button class="btn btn-stop" onclick="stopTracking()">&#9632; Stop</button>' +
         '</div>' +
       '</div>';
@@ -631,6 +634,13 @@ HTML = """<!DOCTYPE html>
   function stopTracking() {
     fetch('/api/stop', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'})
       .then(function(){ refreshStatus(); });
+  }
+
+  function completeTask() {
+    fetch('/api/complete', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'})
+      .then(function(r){ return r.json(); }).then(function(data) {
+        if (data.success) refreshStatus();
+      });
   }
 
   function openNote(btn) {
@@ -995,6 +1005,8 @@ class TimeWebHandler(BaseHTTPRequestHandler):
             self._handle_activity_delete(body)
         elif path == "/api/note/create":
             self._handle_note_create()
+        elif path == "/api/complete":
+            self._handle_complete()
         else:
             self.send_response(404)
             self.end_headers()
@@ -1225,6 +1237,49 @@ class TimeWebHandler(BaseHTTPRequestHandler):
                 )
 
             self._send_json({"success": True, "note_url": obsidian_url, "new": True})
+        except Exception as e:
+            self._send_json({"success": False, "error": str(e)}, 500)
+
+    def _handle_complete(self):
+        active = db.get_active_tracking()
+        if not active:
+            self._send_json({"success": False, "error": "No active tracking"}, 400)
+            return
+        task_id = active.todoist_task_id or ""
+        if not task_id or task_id.startswith("meeting:"):
+            self._send_json({"success": False, "error": "No active Todoist task"}, 400)
+            return
+        try:
+            from .config import config as config_manager
+
+            _stop_active(active)
+
+            api = TodoistAPI()
+            api.close_task(task_id)
+
+            mapping = db.get_todoist_note_by_task_id(task_id)
+            if mapping:
+                note_path = Path(mapping.note_path)
+                if note_path.exists():
+                    content = note_path.read_text()
+                    content = re.sub(r'status: "[^"]*"', 'status: "done"', content)
+                    content = re.sub(r"status: '[^']*'", "status: 'done'", content)
+                    content = re.sub(r"status: \S+", 'status: "done"', content)
+                    note_path.write_text(content)
+
+                    vault_path = config_manager.get_obsidian_vault_path()
+                    if vault_path:
+                        archive_dir = Path(vault_path) / "40 Archive"
+                        archive_dir.mkdir(exist_ok=True)
+                        archive_path = archive_dir / note_path.name
+                        note_path.rename(archive_path)
+                        mapping.note_path = str(archive_path)
+                        mapping.obsidian_url = config_manager.generate_obsidian_url(
+                            "40 Archive", archive_path.name
+                        )
+                        db.update_todoist_note_mapping(mapping)
+
+            self._send_json({"success": True})
         except Exception as e:
             self._send_json({"success": False, "error": str(e)}, 500)
 
