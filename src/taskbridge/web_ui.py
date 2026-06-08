@@ -771,11 +771,12 @@ def _sanitize_name(name: str) -> str:
     return cleaned if cleaned else "general"
 
 
-def _build_bartib_project(project: str, client: str = "") -> str:
-    if client:
-        parts = [_sanitize_name(client), _sanitize_name(project)]
-    else:
-        parts = [_sanitize_name(project)]
+def _build_bartib_project(project: str, client: str = "", tags: list[str] | None = None) -> str:
+    parts = (
+        [_sanitize_name(client), _sanitize_name(project)] if client else [_sanitize_name(project)]
+    )
+    if tags:
+        parts.append(",".join(_sanitize_name(t) for t in tags))
     return "::".join(parts)
 
 
@@ -983,7 +984,26 @@ class TimeWebHandler(BaseHTTPRequestHandler):
 
             bartib = BartibIntegration()
 
-            if project_id:
+            # If a specific task is linked, resolve project+labels from the task itself.
+            # Otherwise fall back to the dropdown-selected project.
+            task_labels: list[str] = []
+            if todoist_task_id and not is_meeting:
+                try:
+                    from .main import resolve_project_info
+
+                    api = TodoistAPI()
+                    task_obj = api.get_task(todoist_task_id)
+                    if task_obj:
+                        project_name, client_name = resolve_project_info(task_obj.project_id, api)
+                        task_labels = task_obj.labels or []
+                    elif project_id:
+                        project_name, client_name = resolve_project_info(project_id, api)
+                    else:
+                        raise ValueError("no project")
+                    bartib_project = _build_bartib_project(project_name, client_name, task_labels)
+                except Exception:
+                    bartib_project = project_raw or "taskbridge"
+            elif project_id:
                 try:
                     from .main import resolve_project_info
 
@@ -991,9 +1011,12 @@ class TimeWebHandler(BaseHTTPRequestHandler):
                     project_name, client_name = resolve_project_info(project_id, api)
                     bartib_project = _build_bartib_project(project_name, client_name)
                 except Exception:
-                    bartib_project = project_raw or "taskbridge"
+                    bartib_project = project_raw or ("meetings" if is_meeting else "taskbridge")
             else:
-                bartib_project = project_raw or "taskbridge"
+                bartib_project = project_raw or ("meetings" if is_meeting else "taskbridge")
+
+            if is_meeting:
+                bartib_project = f"{bartib_project}::meeting"
 
             bartib.start_tracking(description=description, project=bartib_project)
             db.create_tracking_record(

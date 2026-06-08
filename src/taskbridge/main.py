@@ -769,7 +769,6 @@ def task_note(
                 started_at=datetime.now(),
             )
 
-            api.create_comment(task_id, "⏱️ Started tracking time")
             if focus:
                 start_focus_session(task.content)
             typer.echo("✅ Time tracking started")
@@ -2075,10 +2074,6 @@ def time_start(
                 task_name=todoist_task.content,
                 started_at=datetime.now(),
             )
-
-            # Add comment to Todoist
-            with contextlib.suppress(Exception):
-                api.create_comment(task, "⏱️ Started tracking time")
 
             if focus:
                 start_focus_session(todoist_task.content)
