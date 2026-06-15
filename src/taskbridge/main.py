@@ -1703,9 +1703,10 @@ def export_todo_txt(
         typer.echo("❌ Todoist not configured. Run 'taskbridge config todoist' first.")
         raise typer.Exit(1) from None
     try:
-        if output_file:
-            write_todo_txt(output_file)
-            typer.echo(f"✅ Exported to {output_file}")
+        path = output_file or config_manager.get_todo_txt_path()
+        if path:
+            write_todo_txt(path)
+            typer.echo(f"✅ Exported to {path}")
         else:
             for line in _fetch_todo_txt_lines():
                 typer.echo(line)
