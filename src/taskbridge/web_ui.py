@@ -417,9 +417,9 @@ HTML = """<!DOCTYPE html>
         var alias = aliases[i];
         var m = meetings[alias];
         html += '<div class="meeting-item">' +
-          '<span class="meeting-item-name" onclick="startSavedMeeting(\'' + esc(alias) + '\')">' + esc(alias) + '</span>' +
-          '<span class="meeting-item-desc" onclick="startSavedMeeting(\'' + esc(alias) + '\')">' + esc(m.description) + '</span>' +
-          '<span class="meeting-item-del" onclick="undefineMeeting(\'' + esc(alias) + '\')">&#215;</span>' +
+          '<span class="meeting-item-name" data-alias="' + esc(alias) + '" onclick="startSavedMeeting(this.dataset.alias)">' + esc(alias) + '</span>' +
+          '<span class="meeting-item-desc" data-alias="' + esc(alias) + '" onclick="startSavedMeeting(this.dataset.alias)">' + esc(m.description) + '</span>' +
+          '<span class="meeting-item-del" data-alias="' + esc(alias) + '" onclick="undefineMeeting(this.dataset.alias)">&#215;</span>' +
           '</div>';
       }
       el.innerHTML = html;
