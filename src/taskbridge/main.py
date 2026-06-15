@@ -12,7 +12,7 @@ import typer
 from .bartib_integration import BartibIntegration
 from .config import config as config_manager
 from .database import TaskTimeTracking, TodoistNoteMapping, db
-from .todoist_api import TodoistAPI, TodoistTask
+from .todoist_api import TodoistAPI, TodoistProject, TodoistTask
 
 # Main app
 app = typer.Typer(
@@ -1655,11 +1655,26 @@ def format_task_as_todo_txt(task: TodoistTask, project_name: str, client: str = 
     return " ".join(parts)
 
 
+def _build_project_path(project_id: str, projects_by_id: dict[str, TodoistProject]) -> str:
+    """Build a slash-separated project path by walking the Todoist parent chain."""
+    segments: list[str] = []
+    current_id: str | None = project_id
+    seen: set[str] = set()
+    while current_id and current_id not in seen:
+        seen.add(current_id)
+        project = projects_by_id.get(current_id)
+        if not project:
+            break
+        segments.append(project.name)
+        current_id = project.parent_id
+    return "/".join(reversed(segments))
+
+
 def _fetch_todo_txt_lines() -> list[str]:
     """Fetch active and completed tasks from Todoist, return as todo.txt lines."""
     api = TodoistAPI()
     project_mappings = config_manager.get_todoist_project_mappings()
-    todoist_projects = {p.id: p.name for p in api.get_projects()}
+    projects_by_id = {p.id: p for p in api.get_projects()}
     tasks = api.get_tasks()
     completed: list[TodoistTask] = []
     with contextlib.suppress(Exception):
@@ -1667,9 +1682,8 @@ def _fetch_todo_txt_lines() -> list[str]:
 
     lines = []
     for t in tasks + completed:
-        mapping = project_mappings.get(t.project_id, {})
-        project_name = mapping.get("folder") or todoist_projects.get(t.project_id, "")
-        client = mapping.get("client", "")
+        project_name = _build_project_path(t.project_id, projects_by_id)
+        client = project_mappings.get(t.project_id, {}).get("client", "")
         lines.append(format_task_as_todo_txt(t, project_name, client))
     return lines
 

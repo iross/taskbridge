@@ -2,8 +2,8 @@
 
 import re
 
-from taskbridge.main import format_task_as_todo_txt
-from taskbridge.todoist_api import TodoistTask
+from taskbridge.main import _build_project_path, format_task_as_todo_txt
+from taskbridge.todoist_api import TodoistProject, TodoistTask
 
 
 def make_task(**kwargs) -> TodoistTask:
@@ -118,3 +118,43 @@ class TestFormatTaskAsTodoTxt:
             make_task(due={"date": "2023-02-01"}), "Work", client="ACME"
         )
         assert result.index("due:") < result.index("client:")
+
+    def test_nested_project_path_slash_preserved(self):
+        result = format_task_as_todo_txt(make_task(), "CHTC/HTC26")
+        assert "+CHTC/HTC26" in result
+
+    def test_nested_project_spaces_replaced_within_segments(self):
+        result = format_task_as_todo_txt(make_task(), "CHTC/HTC 26")
+        assert "+CHTC/HTC_26" in result
+
+
+def make_project(id: str, name: str, parent_id: str | None = None) -> TodoistProject:
+    return TodoistProject(id=id, name=name, color="", parent_id=parent_id)
+
+
+class TestBuildProjectPath:
+    def test_flat_project(self):
+        projects = {"p1": make_project("p1", "Work")}
+        assert _build_project_path("p1", projects) == "Work"
+
+    def test_two_level_hierarchy(self):
+        projects = {
+            "p1": make_project("p1", "CHTC"),
+            "p2": make_project("p2", "HTC26", parent_id="p1"),
+        }
+        assert _build_project_path("p2", projects) == "CHTC/HTC26"
+
+    def test_three_level_hierarchy(self):
+        projects = {
+            "p1": make_project("p1", "CHTC"),
+            "p2": make_project("p2", "HTC26", parent_id="p1"),
+            "p3": make_project("p3", "Agents", parent_id="p2"),
+        }
+        assert _build_project_path("p3", projects) == "CHTC/HTC26/Agents"
+
+    def test_missing_project_returns_empty(self):
+        assert _build_project_path("nonexistent", {}) == ""
+
+    def test_missing_parent_stops_at_known_node(self):
+        projects = {"p2": make_project("p2", "HTC26", parent_id="p1")}
+        assert _build_project_path("p2", projects) == "HTC26"
