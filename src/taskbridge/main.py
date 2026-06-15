@@ -553,7 +553,7 @@ def task_done(
             typer.echo("\nℹ️  No Obsidian note found for this task")
 
         typer.echo("\n✅ Task completed!")
-        _sync_todo_txt()
+        _sync_todo_txt(newly_completed=task)
 
     except Exception as e:
         typer.echo(f"❌ Error: {e}")
@@ -1671,39 +1671,100 @@ def _build_project_path(project_id: str, projects_by_id: dict[str, TodoistProjec
 
 
 def _fetch_todo_txt_lines() -> list[str]:
-    """Fetch active and completed tasks from Todoist, return as todo.txt lines."""
+    """Fetch active tasks from Todoist and return as todo.txt lines."""
     api = TodoistAPI()
     project_mappings = config_manager.get_todoist_project_mappings()
     projects_by_id = {p.id: p for p in api.get_projects()}
-    tasks = api.get_tasks()
-    completed: list[TodoistTask] = []
-    with contextlib.suppress(Exception):
-        completed = api.get_tasks(filter_query="is:completed")
-
     lines = []
-    for t in tasks + completed:
+    for t in api.get_tasks():
         project_name = _build_project_path(t.project_id, projects_by_id)
         client = project_mappings.get(t.project_id, {}).get("client", "")
         lines.append(format_task_as_todo_txt(t, project_name, client))
     return lines
 
 
-def write_todo_txt(path: str) -> None:
-    """Atomically regenerate the todo.txt file from current Todoist state."""
-    lines = _fetch_todo_txt_lines()
+def _extract_content(todo_line: str) -> str:
+    """Extract bare task content from a todo.txt line for comparison."""
+    line = todo_line
+    # Strip completed prefix: "x YYYY-MM-DD "
+    if line.startswith("x "):
+        line = line[2:].lstrip()
+        if len(line) > 10 and line[10] == " ":
+            line = line[11:]
+    # Strip priority: "(A) "
+    if len(line) > 3 and line[0] == "(" and line[2] == ")":
+        line = line[4:]
+    # Strip creation date: "YYYY-MM-DD "
+    if len(line) > 10 and line[10] == " " and line[:10].replace("-", "").isdigit():
+        line = line[11:]
+    # Content ends before the first +tag, @tag, or key:value extension
+    parts = line.split()
+    content_parts = []
+    for part in parts:
+        if part.startswith("+") or part.startswith("@") or ":" in part:
+            break
+        content_parts.append(part)
+    return " ".join(content_parts)
+
+
+def write_todo_txt(path: str, extra_completed: list[str] | None = None) -> None:
+    """Atomically regenerate the todo.txt file from current Todoist state.
+
+    Preserves completed lines (x ...) already in the file. Warns about active
+    lines in the file whose content is not found in the current Todoist task
+    list, so nothing is silently dropped.
+    """
     output = Path(path)
+    preserved: list[str] = []
+    existing_active: list[str] = []
+    if output.exists():
+        for ln in output.read_text().splitlines():
+            if ln.startswith("x "):
+                preserved.append(ln)
+            elif ln.strip():
+                existing_active.append(ln)
+    if extra_completed:
+        preserved.extend(extra_completed)
+
+    active_lines = _fetch_todo_txt_lines()
+    active_contents = {_extract_content(ln) for ln in active_lines}
+
+    for ln in existing_active:
+        content = _extract_content(ln)
+        if content and content not in active_contents:
+            typer.echo(f"⚠️  todo.txt: not found in Todoist, removing: {ln}")
+
+    all_lines = active_lines + preserved
     tmp = output.parent / f".{output.name}.tmp"
-    tmp.write_text("\n".join(lines) + ("\n" if lines else ""))
+    tmp.write_text("\n".join(all_lines) + ("\n" if all_lines else ""))
     tmp.replace(output)
 
 
-def _sync_todo_txt() -> None:
-    """Regenerate the configured todo.txt file; silent no-op if unconfigured."""
+def _sync_todo_txt(newly_completed: TodoistTask | None = None) -> None:
+    """Regenerate the configured todo.txt file; silent no-op if unconfigured.
+
+    Pass newly_completed when a task was just marked done so it gets written
+    as an x-prefixed line before the active-task regeneration runs.
+    """
     path = config_manager.get_todo_txt_path()
     if not path:
         return
     try:
-        write_todo_txt(path)
+        extra: list[str] = []
+        if newly_completed is not None:
+            api = TodoistAPI()
+            projects_by_id = {p.id: p for p in api.get_projects()}
+            project_name = _build_project_path(newly_completed.project_id, projects_by_id)
+            client = (
+                config_manager.get_todoist_project_mappings()
+                .get(newly_completed.project_id, {})
+                .get("client", "")
+            )
+            newly_completed.is_completed = True
+            if not newly_completed.completed_at:
+                newly_completed.completed_at = datetime.now().strftime("%Y-%m-%d")
+            extra.append(format_task_as_todo_txt(newly_completed, project_name, client))
+        write_todo_txt(path, extra_completed=extra)
     except Exception as e:
         typer.echo(f"⚠️  todo.txt sync failed: {e}")
 

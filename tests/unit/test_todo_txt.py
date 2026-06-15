@@ -2,7 +2,7 @@
 
 import re
 
-from taskbridge.main import _build_project_path, format_task_as_todo_txt
+from taskbridge.main import _build_project_path, format_task_as_todo_txt, write_todo_txt
 from taskbridge.todoist_api import TodoistProject, TodoistTask
 
 
@@ -158,3 +158,52 @@ class TestBuildProjectPath:
     def test_missing_parent_stops_at_known_node(self):
         projects = {"p2": make_project("p2", "HTC26", parent_id="p1")}
         assert _build_project_path("p2", projects) == "HTC26"
+
+
+class TestWriteTodoTxt:
+    def test_preserves_existing_completed_lines(self, tmp_path, mocker):
+        existing = "x 2023-01-10 2023-01-05 Old task +Work\n"
+        todo_file = tmp_path / "todo.txt"
+        todo_file.write_text(existing)
+        active = ["2023-01-15 Active task"]
+        mocker.patch("taskbridge.main._fetch_todo_txt_lines", return_value=active)
+        write_todo_txt(str(todo_file))
+        content = todo_file.read_text()
+        assert "x 2023-01-10 2023-01-05 Old task +Work" in content
+        assert "2023-01-15 Active task" in content
+
+    def test_extra_completed_lines_added(self, tmp_path, mocker):
+        todo_file = tmp_path / "todo.txt"
+        mocker.patch("taskbridge.main._fetch_todo_txt_lines", return_value=[])
+        write_todo_txt(str(todo_file), extra_completed=["x 2023-01-20 Buy milk"])
+        assert "x 2023-01-20 Buy milk" in todo_file.read_text()
+
+    def test_active_lines_without_x_are_not_preserved(self, tmp_path, mocker):
+        todo_file = tmp_path / "todo.txt"
+        todo_file.write_text("2023-01-05 Old active task\n")
+        new_active = ["2023-01-15 New active task"]
+        mocker.patch("taskbridge.main._fetch_todo_txt_lines", return_value=new_active)
+        write_todo_txt(str(todo_file))
+        content = todo_file.read_text()
+        assert "Old active task" not in content
+        assert "New active task" in content
+
+    def test_warns_on_orphaned_active_line(self, tmp_path, mocker, capsys):
+        todo_file = tmp_path / "todo.txt"
+        todo_file.write_text("2023-01-05 Orphaned task\n")
+        mocker.patch("taskbridge.main._fetch_todo_txt_lines", return_value=[])
+        write_todo_txt(str(todo_file))
+        captured = capsys.readouterr()
+        assert "Orphaned task" in captured.out
+        assert "not found in Todoist" in captured.out
+
+    def test_no_warning_when_active_line_matches_todoist(self, tmp_path, mocker, capsys):
+        todo_file = tmp_path / "todo.txt"
+        todo_file.write_text("2023-01-05 Buy milk\n")
+        mocker.patch(
+            "taskbridge.main._fetch_todo_txt_lines",
+            return_value=["2023-01-15 Buy milk +Groceries"],
+        )
+        write_todo_txt(str(todo_file))
+        captured = capsys.readouterr()
+        assert "not found in Todoist" not in captured.out
