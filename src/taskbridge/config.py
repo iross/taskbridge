@@ -182,6 +182,14 @@ class Config:
         except Exception:
             return False
 
+    def get_todo_txt_path(self) -> str | None:
+        """Get path to the todo.txt file for automatic sync."""
+        return self.get("todo_txt_path")
+
+    def set_todo_txt_path(self, path: str | None) -> None:
+        """Set path to the todo.txt file for automatic sync."""
+        self.set("todo_txt_path", path)
+
     def get_obsidian_vault_path(self) -> str | os.PathLike[str]:
         """Get Obsidian vault path."""
         return self.get("obsidian_vault_path")
