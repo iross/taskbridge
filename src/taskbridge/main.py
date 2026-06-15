@@ -1652,6 +1652,8 @@ def format_task_as_todo_txt(task: TodoistTask, project_name: str, client: str = 
     if client:
         parts.append(f"client:{client}")
 
+    parts.append(f"id:{task.id}")
+
     return " ".join(parts)
 
 
@@ -1686,33 +1688,37 @@ def _fetch_todo_txt_lines() -> list[str]:
 def _extract_content(todo_line: str) -> str:
     """Extract bare task content from a todo.txt line for comparison."""
     line = todo_line
-    # Strip completed prefix: "x YYYY-MM-DD "
     if line.startswith("x "):
         line = line[2:].lstrip()
         if len(line) > 10 and line[10] == " ":
             line = line[11:]
-    # Strip priority: "(A) "
     if len(line) > 3 and line[0] == "(" and line[2] == ")":
         line = line[4:]
-    # Strip creation date: "YYYY-MM-DD "
     if len(line) > 10 and line[10] == " " and line[:10].replace("-", "").isdigit():
         line = line[11:]
-    # Content ends before the first +tag, @tag, or key:value extension
-    parts = line.split()
     content_parts = []
-    for part in parts:
+    for part in line.split():
         if part.startswith("+") or part.startswith("@") or ":" in part:
             break
         content_parts.append(part)
     return " ".join(content_parts)
 
 
+def _extract_task_id(todo_line: str) -> str | None:
+    """Extract the id: extension value from a todo.txt line, if present."""
+    for part in todo_line.split():
+        if part.startswith("id:"):
+            return part[3:]
+    return None
+
+
 def write_todo_txt(path: str, extra_completed: list[str] | None = None) -> None:
     """Atomically regenerate the todo.txt file from current Todoist state.
 
-    Preserves completed lines (x ...) already in the file. Warns about active
-    lines in the file whose content is not found in the current Todoist task
-    list, so nothing is silently dropped.
+    Preserves completed lines (x ...) already in the file. For active lines
+    in the file that are no longer in Todoist's active task list, looks up the
+    task by id: extension to check whether it was completed (marks it x) or is
+    genuinely orphaned (warns and keeps it).
     """
     output = Path(path)
     preserved: list[str] = []
@@ -1727,14 +1733,35 @@ def write_todo_txt(path: str, extra_completed: list[str] | None = None) -> None:
         preserved.extend(extra_completed)
 
     active_lines = _fetch_todo_txt_lines()
+    active_ids = {_extract_task_id(ln) for ln in active_lines} - {None}
     active_contents = {_extract_content(ln) for ln in active_lines}
 
+    orphaned: list[str] = []
     for ln in existing_active:
-        content = _extract_content(ln)
-        if content and content not in active_contents:
-            typer.echo(f"⚠️  todo.txt: not found in Todoist, removing: {ln}")
+        if _extract_content(ln) in active_contents:
+            continue  # covered by fresh active_lines
+        task_id = _extract_task_id(ln)
+        if task_id and task_id not in active_ids:
+            with contextlib.suppress(Exception):
+                api = TodoistAPI()
+                task = api.get_task(task_id)
+                if task and task.is_completed:
+                    projects_by_id = {p.id: p for p in api.get_projects()}
+                    project_name = _build_project_path(task.project_id, projects_by_id)
+                    client = (
+                        config_manager.get_todoist_project_mappings()
+                        .get(task.project_id, {})
+                        .get("client", "")
+                    )
+                    if not task.completed_at:
+                        task.completed_at = datetime.now().strftime("%Y-%m-%d")
+                    preserved.append(format_task_as_todo_txt(task, project_name, client))
+                    typer.echo(f"✓ Marked complete: {task.content}")
+                    continue
+        typer.echo(f"⚠️  todo.txt: not found in Todoist, keeping: {ln}")
+        orphaned.append(ln)
 
-    all_lines = active_lines + preserved
+    all_lines = active_lines + preserved + orphaned
     tmp = output.parent / f".{output.name}.tmp"
     tmp.write_text("\n".join(all_lines) + ("\n" if all_lines else ""))
     tmp.replace(output)

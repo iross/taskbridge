@@ -2,7 +2,12 @@
 
 import re
 
-from taskbridge.main import _build_project_path, format_task_as_todo_txt, write_todo_txt
+from taskbridge.main import (
+    _build_project_path,
+    _extract_task_id,
+    format_task_as_todo_txt,
+    write_todo_txt,
+)
 from taskbridge.todoist_api import TodoistProject, TodoistTask
 
 
@@ -26,7 +31,7 @@ def make_task(**kwargs) -> TodoistTask:
 class TestFormatTaskAsTodoTxt:
     def test_active_no_priority(self):
         result = format_task_as_todo_txt(make_task(priority=1), "Groceries")
-        assert result == "2023-01-15 Buy milk +Groceries"
+        assert result == "2023-01-15 Buy milk +Groceries id:1"
 
     def test_priority_a(self):
         result = format_task_as_todo_txt(make_task(priority=4), "Work")
@@ -119,6 +124,14 @@ class TestFormatTaskAsTodoTxt:
         )
         assert result.index("due:") < result.index("client:")
 
+    def test_id_appended_at_end(self):
+        result = format_task_as_todo_txt(make_task(id="task-42"), "Work")
+        assert result.endswith("id:task-42")
+
+    def test_id_after_client(self):
+        result = format_task_as_todo_txt(make_task(id="task-42"), "Work", client="ACME")
+        assert result.index("client:") < result.index("id:")
+
     def test_nested_project_path_slash_preserved(self):
         result = format_task_as_todo_txt(make_task(), "CHTC/HTC26")
         assert "+CHTC/HTC26" in result
@@ -178,32 +191,44 @@ class TestWriteTodoTxt:
         write_todo_txt(str(todo_file), extra_completed=["x 2023-01-20 Buy milk"])
         assert "x 2023-01-20 Buy milk" in todo_file.read_text()
 
-    def test_active_lines_without_x_are_not_preserved(self, tmp_path, mocker):
+    def test_orphaned_active_lines_are_kept(self, tmp_path, mocker):
         todo_file = tmp_path / "todo.txt"
         todo_file.write_text("2023-01-05 Old active task\n")
-        new_active = ["2023-01-15 New active task"]
+        new_active = ["2023-01-15 New active task id:99"]
         mocker.patch("taskbridge.main._fetch_todo_txt_lines", return_value=new_active)
         write_todo_txt(str(todo_file))
         content = todo_file.read_text()
-        assert "Old active task" not in content
+        assert "Old active task" in content
         assert "New active task" in content
 
-    def test_warns_on_orphaned_active_line(self, tmp_path, mocker, capsys):
+    def test_warns_and_keeps_orphaned_active_line(self, tmp_path, mocker, capsys):
         todo_file = tmp_path / "todo.txt"
         todo_file.write_text("2023-01-05 Orphaned task\n")
         mocker.patch("taskbridge.main._fetch_todo_txt_lines", return_value=[])
         write_todo_txt(str(todo_file))
         captured = capsys.readouterr()
         assert "Orphaned task" in captured.out
-        assert "not found in Todoist" in captured.out
+        assert "keeping" in captured.out
+        assert "Orphaned task" in todo_file.read_text()
 
     def test_no_warning_when_active_line_matches_todoist(self, tmp_path, mocker, capsys):
         todo_file = tmp_path / "todo.txt"
         todo_file.write_text("2023-01-05 Buy milk\n")
         mocker.patch(
             "taskbridge.main._fetch_todo_txt_lines",
-            return_value=["2023-01-15 Buy milk +Groceries"],
+            return_value=["2023-01-15 Buy milk +Groceries id:1"],
         )
         write_todo_txt(str(todo_file))
         captured = capsys.readouterr()
         assert "not found in Todoist" not in captured.out
+
+
+class TestExtractTaskId:
+    def test_extracts_id(self):
+        assert _extract_task_id("2023-01-15 Buy milk +Work id:abc123") == "abc123"
+
+    def test_returns_none_when_absent(self):
+        assert _extract_task_id("2023-01-15 Buy milk +Work") is None
+
+    def test_works_on_completed_line(self):
+        assert _extract_task_id("x 2023-01-20 Buy milk id:abc123") == "abc123"
