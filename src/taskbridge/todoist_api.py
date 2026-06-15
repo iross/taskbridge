@@ -48,6 +48,7 @@ class TodoistTask:
     assignee_id: str | None = None
     assigner_id: str | None = None
     is_completed: bool = False
+    completed_at: str | None = None
 
     def __post_init__(self):
         """Initialize default values for mutable fields."""
@@ -271,6 +272,7 @@ class TodoistAPI:
                         assignee_id=task_data.get("assignee_id"),
                         assigner_id=task_data.get("assigner_id"),
                         is_completed=task_data.get("is_completed", False),
+                        completed_at=task_data.get("completed_at"),
                     )
                 )
 

@@ -12,7 +12,7 @@ import typer
 from .bartib_integration import BartibIntegration
 from .config import config as config_manager
 from .database import TaskTimeTracking, TodoistNoteMapping, db
-from .todoist_api import TodoistAPI
+from .todoist_api import TodoistAPI, TodoistTask
 
 # Main app
 app = typer.Typer(
@@ -29,6 +29,7 @@ map_app = typer.Typer(help="Task-to-note mapping commands")
 sync_app = typer.Typer(help="Synchronization commands")
 time_app = typer.Typer(help="Time tracking commands")
 meeting_app = typer.Typer(help="Meeting time tracking commands")
+export_app = typer.Typer(help="Export commands")
 
 app.add_typer(config_app, name="config")
 app.add_typer(task_app, name="task")
@@ -37,6 +38,7 @@ app.add_typer(map_app, name="map")
 app.add_typer(sync_app, name="sync")
 app.add_typer(time_app, name="time")
 app.add_typer(meeting_app, name="meeting")
+app.add_typer(export_app, name="export")
 
 
 # ============================================================================
@@ -227,6 +229,27 @@ def config_jira():
         typer.echo(f"   Project filter: {', '.join(project_filter)}")
     else:
         typer.echo("   No project filter — all assigned issues will be synced")
+
+
+@config_app.command("todo-txt")
+def config_todo_txt():
+    """Configure the todo.txt file path for automatic sync."""
+    current = config_manager.get_todo_txt_path()
+    if current:
+        typer.echo(f"Current todo.txt path: {current}")
+        if not typer.confirm("Update path?"):
+            return
+    path = typer.prompt("Path for todo.txt file (leave empty to disable)", default="")
+    if not path:
+        config_manager.set_todo_txt_path(None)
+        typer.echo("✅ todo.txt sync disabled")
+        return
+    resolved = str(Path(path).expanduser())
+    if not Path(resolved).parent.exists():
+        typer.echo(f"❌ Directory does not exist: {Path(resolved).parent}")
+        raise typer.Exit(1) from None
+    config_manager.set_todo_txt_path(resolved)
+    typer.echo(f"✅ todo.txt path set to: {resolved}")
 
 
 # ============================================================================
@@ -530,6 +553,7 @@ def task_done(
             typer.echo("\nℹ️  No Obsidian note found for this task")
 
         typer.echo("\n✅ Task completed!")
+        _sync_todo_txt()
 
     except Exception as e:
         typer.echo(f"❌ Error: {e}")
@@ -1292,6 +1316,7 @@ def sync_notes(
         typer.echo(f"✅ Created: {created_count}")
         typer.echo(f"❌ Failed: {failed_count}")
         typer.echo(f"📋 Total: {len(new_tasks)}")
+        _sync_todo_txt()
 
     except Exception as e:
         typer.echo(f"❌ Error: {e}")
@@ -1420,6 +1445,7 @@ def sync_projects(
         typer.echo(f"   ✅ Synced: {synced_count}")
         typer.echo(f"   ❌ Failed: {failed_count}")
         typer.echo(f"   📋 Total: {len(projects_to_sync)}")
+        _sync_todo_txt()
 
     except Exception as e:
         typer.echo(f"❌ Error: {e}")
@@ -1585,6 +1611,107 @@ def sync_jira(
         )
     else:
         typer.echo("✅ Nothing to do.")
+    _sync_todo_txt()
+
+
+# ============================================================================
+# TODO.TXT HELPERS AND EXPORT COMMAND
+# ============================================================================
+
+_PRIORITY_LETTER: dict[int, str] = {4: "A", 3: "B", 2: "C"}
+
+
+def format_task_as_todo_txt(task: TodoistTask, project_name: str, client: str = "") -> str:
+    """Format a Todoist task as a single todo.txt line."""
+    parts: list[str] = []
+
+    if task.is_completed:
+        completion_date = (task.completed_at or "")[:10] or datetime.now().strftime("%Y-%m-%d")
+        parts.append(f"x {completion_date}")
+
+    letter = _PRIORITY_LETTER.get(task.priority)
+    if letter:
+        parts.append(f"({letter})")
+
+    if task.created_at:
+        parts.append(task.created_at[:10])
+
+    parts.append(task.content)
+
+    if project_name:
+        parts.append(f"+{project_name.replace(' ', '_')}")
+
+    for label in task.labels:
+        parts.append(f"@{label}")
+
+    if task.due:
+        due_date = task.due.get("date", "")[:10]
+        if due_date:
+            parts.append(f"due:{due_date}")
+
+    if client:
+        parts.append(f"client:{client}")
+
+    return " ".join(parts)
+
+
+def _fetch_todo_txt_lines() -> list[str]:
+    """Fetch active and completed tasks from Todoist, return as todo.txt lines."""
+    api = TodoistAPI()
+    project_mappings = config_manager.get_todoist_project_mappings()
+    todoist_projects = {p.id: p.name for p in api.get_projects()}
+    tasks = api.get_tasks()
+    completed: list[TodoistTask] = []
+    with contextlib.suppress(Exception):
+        completed = api.get_tasks(filter_query="is:completed")
+
+    lines = []
+    for t in tasks + completed:
+        mapping = project_mappings.get(t.project_id, {})
+        project_name = mapping.get("folder") or todoist_projects.get(t.project_id, "")
+        client = mapping.get("client", "")
+        lines.append(format_task_as_todo_txt(t, project_name, client))
+    return lines
+
+
+def write_todo_txt(path: str) -> None:
+    """Atomically regenerate the todo.txt file from current Todoist state."""
+    lines = _fetch_todo_txt_lines()
+    output = Path(path)
+    tmp = output.parent / f".{output.name}.tmp"
+    tmp.write_text("\n".join(lines) + ("\n" if lines else ""))
+    tmp.replace(output)
+
+
+def _sync_todo_txt() -> None:
+    """Regenerate the configured todo.txt file; silent no-op if unconfigured."""
+    path = config_manager.get_todo_txt_path()
+    if not path:
+        return
+    try:
+        write_todo_txt(path)
+    except Exception as e:
+        typer.echo(f"⚠️  todo.txt sync failed: {e}")
+
+
+@export_app.command("todo-txt")
+def export_todo_txt(
+    output_file: str | None = typer.Argument(None, help="Output file path (stdout if omitted)"),
+):
+    """Export all Todoist tasks to todo.txt format."""
+    if not config_manager.get_todoist_token():
+        typer.echo("❌ Todoist not configured. Run 'taskbridge config todoist' first.")
+        raise typer.Exit(1) from None
+    try:
+        if output_file:
+            write_todo_txt(output_file)
+            typer.echo(f"✅ Exported to {output_file}")
+        else:
+            for line in _fetch_todo_txt_lines():
+                typer.echo(line)
+    except Exception as e:
+        typer.echo(f"❌ Error: {e}")
+        raise typer.Exit(1) from None
 
 
 # ============================================================================
