@@ -213,6 +213,85 @@ HTML = """<!DOCTYPE html>
     .task-opt:hover, .task-opt.hi { background: var(--active-bg); color: var(--accent); }
     .task-opt.is-new { color: var(--muted); font-style: italic; }
     .task-opt.is-new:hover, .task-opt.is-new.hi { background: var(--active-bg); color: var(--accent); }
+    .meeting-wrap { position: relative; }
+    .meeting-drop {
+      display: none;
+      position: absolute;
+      right: 0;
+      top: calc(100% + 4px);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      min-width: 260px;
+      z-index: 100;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+    }
+    .meeting-drop.open { display: block; }
+    .meeting-drop-section { padding: 4px 0; border-bottom: 1px solid var(--border); }
+    .meeting-drop-section:last-child { border-bottom: none; }
+    .meeting-drop-label {
+      font-size: 0.65rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--muted);
+      padding: 5px 12px 2px;
+    }
+    .meeting-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 12px;
+      cursor: pointer;
+      font-size: 0.82rem;
+    }
+    .meeting-item:hover { background: var(--active-bg); }
+    .meeting-item-name { font-weight: 600; color: var(--text); white-space: nowrap; }
+    .meeting-item-desc { color: var(--muted); font-size: 0.78rem; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .meeting-item-del { color: var(--danger); font-size: 0.9rem; cursor: pointer; padding: 0 2px; opacity: 0.45; flex-shrink: 0; }
+    .meeting-item-del:hover { opacity: 1; }
+    .meeting-adhoc {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 12px;
+      cursor: pointer;
+      font-size: 0.82rem;
+      color: var(--muted);
+    }
+    .meeting-adhoc:hover { background: var(--active-bg); color: var(--text); }
+    .meeting-adhoc.on { color: var(--meeting); }
+    .meeting-define-toggle {
+      padding: 7px 12px;
+      cursor: pointer;
+      font-size: 0.82rem;
+      color: var(--muted);
+    }
+    .meeting-define-toggle:hover { color: var(--accent); }
+    .meeting-define-form { display: none; padding: 8px 12px 10px; border-top: 1px solid var(--border); }
+    .meeting-define-form.open { display: block; }
+    .meeting-define-form input {
+      width: 100%;
+      background: var(--input-bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 5px 8px;
+      font-family: inherit;
+      font-size: 0.82rem;
+      margin-bottom: 5px;
+    }
+    .meeting-define-form input:focus { outline: 1px solid var(--meeting); border-color: var(--meeting); }
+    .meeting-define-form .df-label {
+      display: block;
+      font-size: 0.65rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 3px;
+    }
+    .meeting-define-actions { display: flex; gap: 6px; margin-top: 6px; }
+    .btn-meeting-save { background: var(--meeting); color: #fff; padding: 5px 10px; font-size: 0.78rem; }
+    .meeting-err { color: var(--danger); font-size: 0.78rem; margin-top: 4px; min-height: 1em; }
   </style>
 </head>
 <body>
@@ -255,7 +334,38 @@ HTML = """<!DOCTYPE html>
     <div class="form-actions">
       <span class="err" id="form-err"></span>
       <div style="display:flex;gap:8px;align-items:center">
-        <button id="btn-meeting" class="btn btn-meeting" onclick="toggleMeeting()">&#128197; Meeting</button>
+        <div class="meeting-wrap">
+          <button id="btn-meeting" class="btn btn-meeting" onclick="toggleMeetingPanel()">&#128197; Meeting</button>
+          <div id="meeting-drop" class="meeting-drop">
+            <div class="meeting-drop-section">
+              <div class="meeting-drop-label">Saved Meetings</div>
+              <div id="meeting-list"></div>
+            </div>
+            <div class="meeting-drop-section">
+              <div class="meeting-adhoc" id="meeting-adhoc-item" onclick="toggleAdhoc()">&#128203; Ad-hoc (use form above)</div>
+            </div>
+            <div class="meeting-drop-section">
+              <div class="meeting-define-toggle" onclick="toggleDefineForm()">&#43; Define New Meeting</div>
+              <div id="meeting-define-form" class="meeting-define-form">
+                <span class="df-label">Alias</span>
+                <input id="meeting-alias" type="text" placeholder="e.g. standup">
+                <span class="df-label">Description</span>
+                <input id="meeting-desc-input" type="text" placeholder="Daily Standup">
+                <span class="df-label">Project (optional)</span>
+                <input id="meeting-project-input" type="text" placeholder="meetings">
+                <span class="df-label">Client (optional)</span>
+                <input id="meeting-client-input" type="text" placeholder="">
+                <span class="df-label">Tags (comma-separated)</span>
+                <input id="meeting-tags-input" type="text" placeholder="team, recurring">
+                <div class="meeting-define-actions">
+                  <button class="btn btn-meeting-save" onclick="defineMeeting()">Save</button>
+                  <button class="btn btn-cancel" onclick="toggleDefineForm()">Cancel</button>
+                </div>
+                <div class="meeting-err" id="meeting-err"></div>
+              </div>
+            </div>
+          </div>
+        </div>
         <button class="btn btn-start" onclick="startTracking()">&#9654; Start</button>
       </div>
     </div>
@@ -268,10 +378,116 @@ HTML = """<!DOCTYPE html>
   var startedAt = null;
   var elapsedTimer = null;
   var isMeeting = false;
+  var meetingPanelOpen = false;
 
-  function toggleMeeting() {
+  function toggleMeetingPanel() {
+    meetingPanelOpen = !meetingPanelOpen;
+    var drop = document.getElementById('meeting-drop');
+    if (meetingPanelOpen) {
+      drop.classList.add('open');
+      loadMeetings();
+    } else {
+      drop.classList.remove('open');
+    }
+  }
+
+  function closeMeetingPanel() {
+    meetingPanelOpen = false;
+    document.getElementById('meeting-drop').classList.remove('open');
+  }
+
+  function toggleAdhoc() {
     isMeeting = !isMeeting;
     document.getElementById('btn-meeting').classList.toggle('on', isMeeting);
+    document.getElementById('meeting-adhoc-item').classList.toggle('on', isMeeting);
+    closeMeetingPanel();
+  }
+
+  function loadMeetings() {
+    fetch('/api/meetings').then(function(r){ return r.json(); }).then(function(data) {
+      var el = document.getElementById('meeting-list');
+      var meetings = data.meetings || {};
+      var aliases = Object.keys(meetings);
+      if (!aliases.length) {
+        el.innerHTML = '<div style="color:var(--muted);font-size:0.8rem;padding:5px 12px">No saved meetings</div>';
+        return;
+      }
+      var html = '';
+      for (var i = 0; i < aliases.length; i++) {
+        var alias = aliases[i];
+        var m = meetings[alias];
+        html += '<div class="meeting-item">' +
+          '<span class="meeting-item-name" onclick="startSavedMeeting(\'' + esc(alias) + '\')">' + esc(alias) + '</span>' +
+          '<span class="meeting-item-desc" onclick="startSavedMeeting(\'' + esc(alias) + '\')">' + esc(m.description) + '</span>' +
+          '<span class="meeting-item-del" onclick="undefineMeeting(\'' + esc(alias) + '\')">&#215;</span>' +
+          '</div>';
+      }
+      el.innerHTML = html;
+    }).catch(function() {
+      document.getElementById('meeting-list').innerHTML = '<div style="color:var(--muted);font-size:0.8rem;padding:5px 12px">Failed to load</div>';
+    });
+  }
+
+  function startSavedMeeting(alias) {
+    closeMeetingPanel();
+    fetch('/api/meeting/start', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({alias: alias})
+    }).then(function(r){ return r.json(); }).then(function(data) {
+      if (data.success) {
+        refreshStatus();
+      } else {
+        document.getElementById('form-err').textContent = data.error || 'Failed to start meeting';
+      }
+    }).catch(function() { document.getElementById('form-err').textContent = 'Network error'; });
+  }
+
+  function undefineMeeting(alias) {
+    if (!confirm('Remove saved meeting "' + alias + '"?')) return;
+    fetch('/api/meeting/undefine', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({alias: alias})
+    }).then(function(r){ return r.json(); }).then(function(data) {
+      if (data.success) loadMeetings();
+    });
+  }
+
+  function toggleDefineForm() {
+    var form = document.getElementById('meeting-define-form');
+    form.classList.toggle('open');
+    document.getElementById('meeting-err').textContent = '';
+  }
+
+  function defineMeeting() {
+    var alias = document.getElementById('meeting-alias').value.trim();
+    var desc = document.getElementById('meeting-desc-input').value.trim();
+    var errEl = document.getElementById('meeting-err');
+    if (!alias || !desc) { errEl.textContent = 'Alias and description are required'; return; }
+    fetch('/api/meeting/define', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        alias: alias,
+        description: desc,
+        project: document.getElementById('meeting-project-input').value.trim(),
+        client: document.getElementById('meeting-client-input').value.trim(),
+        tags: document.getElementById('meeting-tags-input').value.trim()
+      })
+    }).then(function(r){ return r.json(); }).then(function(data) {
+      if (data.success) {
+        document.getElementById('meeting-alias').value = '';
+        document.getElementById('meeting-desc-input').value = '';
+        document.getElementById('meeting-project-input').value = '';
+        document.getElementById('meeting-client-input').value = '';
+        document.getElementById('meeting-tags-input').value = '';
+        document.getElementById('meeting-define-form').classList.remove('open');
+        loadMeetings();
+      } else {
+        errEl.textContent = data.error || 'Failed to save';
+      }
+    }).catch(function() { errEl.textContent = 'Network error'; });
   }
 
   function esc(s) {
@@ -626,6 +842,7 @@ HTML = """<!DOCTYPE html>
           document.getElementById('task-id').value = '';
           isMeeting = false;
           document.getElementById('btn-meeting').classList.remove('on');
+          document.getElementById('meeting-adhoc-item').classList.remove('on');
           refreshStatus();
         } else {
           errEl.textContent = data.error || 'Failed to start';
@@ -740,6 +957,8 @@ HTML = """<!DOCTYPE html>
   document.addEventListener('mousedown', function(e) {
     var wrap = document.querySelector('.task-wrap');
     if (wrap && !wrap.contains(e.target)) closeTaskDd();
+    var mwrap = document.querySelector('.meeting-wrap');
+    if (meetingPanelOpen && mwrap && !mwrap.contains(e.target)) closeMeetingPanel();
   });
 
   refreshStatus();
@@ -1002,6 +1221,8 @@ class TimeWebHandler(BaseHTTPRequestHandler):
             qs = parse_qs(parsed.query)
             project_id = qs.get("project_id", [""])[0]
             self._handle_tasks(project_id)
+        elif path == "/api/meetings":
+            self._handle_meetings_list()
         else:
             self.send_response(404)
             self.end_headers()
@@ -1027,6 +1248,12 @@ class TimeWebHandler(BaseHTTPRequestHandler):
             self._handle_note_create()
         elif path == "/api/complete":
             self._handle_complete()
+        elif path == "/api/meeting/start":
+            self._handle_meeting_start(body)
+        elif path == "/api/meeting/define":
+            self._handle_meeting_define(body)
+        elif path == "/api/meeting/undefine":
+            self._handle_meeting_undefine(body)
         else:
             self.send_response(404)
             self.end_headers()
@@ -1338,6 +1565,86 @@ class TimeWebHandler(BaseHTTPRequestHandler):
                         db.update_todoist_note_mapping(mapping)
 
             self._send_json({"success": True})
+        except Exception as e:
+            self._send_json({"success": False, "error": str(e)}, 500)
+
+    def _handle_meetings_list(self):
+        from .config import config as config_manager
+
+        self._send_json({"meetings": config_manager.get_meetings()})
+
+    def _handle_meeting_start(self, body: dict):
+        try:
+            alias = body.get("alias", "").strip()
+            if not alias:
+                self._send_json({"success": False, "error": "Alias required"}, 400)
+                return
+            from .config import config as config_manager
+
+            definition = config_manager.get_meetings().get(alias)
+            if not definition:
+                self._send_json({"success": False, "error": f"No meeting named '{alias}'"}, 404)
+                return
+
+            description = definition["description"]
+            project = definition.get("project") or "meetings"
+            client = definition.get("client", "")
+            tags = list(definition.get("tags", []))
+            if "meeting" not in tags:
+                tags.append("meeting")
+            bartib_project = _build_bartib_project(project, client, tags)
+
+            active = db.get_active_tracking()
+            if active:
+                _stop_active(active)
+
+            slug = alias.lower().replace(" ", "-")
+            bartib = BartibIntegration()
+            bartib.start_tracking(description=description, project=bartib_project)
+            db.create_tracking_record(
+                todoist_task_id=f"meeting:{slug}",
+                project_name=bartib_project,
+                task_name=description,
+                started_at=datetime.now(),
+            )
+            self._send_json({"success": True, "project": bartib_project})
+        except Exception as e:
+            self._send_json({"success": False, "error": str(e)}, 500)
+
+    def _handle_meeting_define(self, body: dict):
+        try:
+            alias = body.get("alias", "").strip()
+            description = body.get("description", "").strip()
+            if not alias or not description:
+                self._send_json(
+                    {"success": False, "error": "Alias and description are required"}, 400
+                )
+                return
+            project = body.get("project", "").strip()
+            client = body.get("client", "").strip()
+            tags_raw = body.get("tags", "")
+            tags = [t.strip() for t in tags_raw.split(",") if t.strip()] if tags_raw else []
+            from .config import config as config_manager
+
+            config_manager.set_meeting(
+                alias=alias, description=description, project=project, client=client, tags=tags
+            )
+            self._send_json({"success": True})
+        except Exception as e:
+            self._send_json({"success": False, "error": str(e)}, 500)
+
+    def _handle_meeting_undefine(self, body: dict):
+        try:
+            alias = body.get("alias", "").strip()
+            if not alias:
+                self._send_json({"success": False, "error": "Alias required"}, 400)
+                return
+            from .config import config as config_manager
+
+            if config_manager.delete_meeting(alias):
+                self._send_json({"success": True})
+            else:
+                self._send_json({"success": False, "error": f"No meeting named '{alias}'"}, 404)
         except Exception as e:
             self._send_json({"success": False, "error": str(e)}, 500)
 
