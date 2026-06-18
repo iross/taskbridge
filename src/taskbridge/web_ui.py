@@ -1037,7 +1037,7 @@ def _read_activities(days: int = 7) -> list[dict]:
     except OSError:
         pass
 
-    activities.reverse()
+    activities.sort(key=lambda a: a["started_at"], reverse=True)
     return activities
 
 
