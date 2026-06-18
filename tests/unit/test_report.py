@@ -31,25 +31,35 @@ class TestParseProjectSegments:
         assert parse_project_segments("CHTC::Morgridge-Seminar") == (
             "CHTC",
             "Morgridge-Seminar",
+            [],
         )
 
-    def test_tags_ignored(self):
+    def test_tags_returned(self):
         from taskbridge.main import parse_project_segments
 
         assert parse_project_segments("CHTC::Morgridge-Seminar::meeting") == (
             "CHTC",
             "Morgridge-Seminar",
+            ["meeting"],
         )
+
+    def test_multiple_tags_returned(self):
+        from taskbridge.main import parse_project_segments
+
+        client, project, tags = parse_project_segments("CHTC::NAIRR::writing,urgent")
+        assert (client, project) == ("CHTC", "NAIRR")
+        assert set(tags) == {"writing", "urgent"}
 
     def test_no_separator_goes_to_other(self):
         from taskbridge.main import parse_project_segments
 
-        assert parse_project_segments("meetings") == ("(other)", "meetings")
+        assert parse_project_segments("meetings") == ("(other)", "meetings", [])
 
-    def test_multiple_tag_segments_ignored(self):
+    def test_no_tags_returns_empty_list(self):
         from taskbridge.main import parse_project_segments
 
-        assert parse_project_segments("CHTC::NAIRR::writing,urgent") == ("CHTC", "NAIRR")
+        _, _, tags = parse_project_segments("CHTC::NAIRR")
+        assert tags == []
 
 
 # ============================================================================
@@ -133,10 +143,16 @@ class TestBuildReportEntries:
 
 
 class TestFormatReport:
-    def _entry(self, client, project, description, seconds):
+    def _entry(self, client, project, description, seconds, tags=None):
         from taskbridge.main import ReportEntry
 
-        return ReportEntry(client=client, project=project, description=description, seconds=seconds)
+        return ReportEntry(
+            client=client,
+            project=project,
+            description=description,
+            seconds=seconds,
+            tags=tags or [],
+        )
 
     def test_empty(self):
         from taskbridge.main import format_report
@@ -193,6 +209,38 @@ class TestFormatReport:
         output = format_report(entries)
 
         assert output.index("CHTC") < output.index("PATh")
+
+    def test_label_breakdown_shown(self):
+        from taskbridge.main import format_report
+
+        entries = [
+            self._entry("CHTC", "NAIRR", "Standup", 1800, tags=["meeting"]),
+            self._entry("CHTC", "NAIRR", "Write-up", 1800, tags=[]),
+        ]
+        output = format_report(entries)
+
+        assert "Labels" in output
+        assert "meeting  0.50" in output
+
+    def test_label_breakdown_omitted_when_no_tags(self):
+        from taskbridge.main import format_report
+
+        entries = [self._entry("CHTC", "NAIRR", "Write-up", 3600)]
+        output = format_report(entries)
+
+        assert "Labels" not in output
+
+    def test_label_fraction_of_total(self):
+        from taskbridge.main import format_report
+
+        entries = [
+            self._entry("CHTC", "NAIRR", "A", 3600, tags=["meeting"]),
+            self._entry("CHTC", "NAIRR", "B", 3600, tags=["meeting"]),
+            self._entry("CHTC", "NAIRR", "C", 3600, tags=[]),
+        ]
+        output = format_report(entries)
+
+        assert "meeting  0.67" in output
 
 
 # ============================================================================

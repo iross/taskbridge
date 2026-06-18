@@ -132,6 +132,20 @@ class TestFormatTaskAsTodoTxt:
         result = format_task_as_todo_txt(make_task(id="task-42"), "Work", client="ACME")
         assert result.index("client:") < result.index("id:")
 
+    def test_note_url_included(self):
+        result = format_task_as_todo_txt(
+            make_task(), "Work", note_url="obsidian://open?vault=v&file=f"
+        )
+        assert "note:obsidian://open?vault=v&file=f" in result
+
+    def test_empty_note_url_omitted(self):
+        result = format_task_as_todo_txt(make_task(), "Work", note_url="")
+        assert "note:" not in result
+
+    def test_note_url_before_id(self):
+        result = format_task_as_todo_txt(make_task(), "Work", note_url="obsidian://x")
+        assert result.index("note:") < result.index("id:")
+
     def test_nested_project_path_slash_preserved(self):
         result = format_task_as_todo_txt(make_task(), "CHTC/HTC26")
         assert "+CHTC/HTC26" in result
@@ -191,7 +205,7 @@ class TestWriteTodoTxt:
         write_todo_txt(str(todo_file), extra_completed=["x 2023-01-20 Buy milk"])
         assert "x 2023-01-20 Buy milk" in todo_file.read_text()
 
-    def test_orphaned_active_lines_are_kept(self, tmp_path, mocker):
+    def test_orphaned_active_line_without_id_is_kept(self, tmp_path, mocker):
         todo_file = tmp_path / "todo.txt"
         todo_file.write_text("2023-01-05 Old active task\n")
         new_active = ["2023-01-15 New active task id:99"]
@@ -201,15 +215,25 @@ class TestWriteTodoTxt:
         assert "Old active task" in content
         assert "New active task" in content
 
-    def test_warns_and_keeps_orphaned_active_line(self, tmp_path, mocker, capsys):
+    def test_orphaned_active_line_without_id_kept_silently(self, tmp_path, mocker, capsys):
         todo_file = tmp_path / "todo.txt"
         todo_file.write_text("2023-01-05 Orphaned task\n")
         mocker.patch("taskbridge.main._fetch_todo_txt_lines", return_value=[])
         write_todo_txt(str(todo_file))
         captured = capsys.readouterr()
-        assert "Orphaned task" in captured.out
-        assert "keeping" in captured.out
+        assert "Orphaned task" not in captured.out
         assert "Orphaned task" in todo_file.read_text()
+
+    def test_active_line_with_id_not_in_todoist_marked_complete(self, tmp_path, mocker, capsys):
+        todo_file = tmp_path / "todo.txt"
+        todo_file.write_text("2023-01-05 GPU task +Work id:abc123\n")
+        mocker.patch("taskbridge.main._fetch_todo_txt_lines", return_value=[])
+        write_todo_txt(str(todo_file))
+        content = todo_file.read_text()
+        assert content.startswith("x ")
+        assert "GPU task" in content
+        captured = capsys.readouterr()
+        assert "Marked complete" in captured.out
 
     def test_no_warning_when_active_line_matches_todoist(self, tmp_path, mocker, capsys):
         todo_file = tmp_path / "todo.txt"

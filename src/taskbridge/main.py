@@ -1621,7 +1621,9 @@ def sync_jira(
 _PRIORITY_LETTER: dict[int, str] = {4: "A", 3: "B", 2: "C"}
 
 
-def format_task_as_todo_txt(task: TodoistTask, project_name: str, client: str = "") -> str:
+def format_task_as_todo_txt(
+    task: TodoistTask, project_name: str, client: str = "", note_url: str = ""
+) -> str:
     """Format a Todoist task as a single todo.txt line."""
     parts: list[str] = []
 
@@ -1652,6 +1654,9 @@ def format_task_as_todo_txt(task: TodoistTask, project_name: str, client: str = 
     if client:
         parts.append(f"client:{client}")
 
+    if note_url:
+        parts.append(f"note:{note_url}")
+
     parts.append(f"id:{task.id}")
 
     return " ".join(parts)
@@ -1681,7 +1686,9 @@ def _fetch_todo_txt_lines() -> list[str]:
     for t in api.get_tasks():
         project_name = _build_project_path(t.project_id, projects_by_id)
         client = project_mappings.get(t.project_id, {}).get("client", "")
-        lines.append(format_task_as_todo_txt(t, project_name, client))
+        mapping = db.get_todoist_note_by_task_id(t.id)
+        note_url = mapping.obsidian_url if mapping else ""
+        lines.append(format_task_as_todo_txt(t, project_name, client, note_url))
     return lines
 
 
@@ -1733,7 +1740,6 @@ def write_todo_txt(path: str, extra_completed: list[str] | None = None) -> None:
         preserved.extend(extra_completed)
 
     active_lines = _fetch_todo_txt_lines()
-    active_ids = {_extract_task_id(ln) for ln in active_lines} - {None}
     active_contents = {_extract_content(ln) for ln in active_lines}
 
     orphaned: list[str] = []
@@ -1741,25 +1747,14 @@ def write_todo_txt(path: str, extra_completed: list[str] | None = None) -> None:
         if _extract_content(ln) in active_contents:
             continue  # covered by fresh active_lines
         task_id = _extract_task_id(ln)
-        if task_id and task_id not in active_ids:
-            with contextlib.suppress(Exception):
-                api = TodoistAPI()
-                task = api.get_task(task_id)
-                if task and task.is_completed:
-                    projects_by_id = {p.id: p for p in api.get_projects()}
-                    project_name = _build_project_path(task.project_id, projects_by_id)
-                    client = (
-                        config_manager.get_todoist_project_mappings()
-                        .get(task.project_id, {})
-                        .get("client", "")
-                    )
-                    if not task.completed_at:
-                        task.completed_at = datetime.now().strftime("%Y-%m-%d")
-                    preserved.append(format_task_as_todo_txt(task, project_name, client))
-                    typer.echo(f"✓ Marked complete: {task.content}")
-                    continue
-        typer.echo(f"⚠️  todo.txt: not found in Todoist, keeping: {ln}")
-        orphaned.append(ln)
+        if task_id:
+            # Had a Todoist ID but is no longer active — assume completed.
+            # REST API v1 returns 404 for completed tasks so we can't verify.
+            today = datetime.now().strftime("%Y-%m-%d")
+            preserved.append(f"x {today} {ln}")
+            typer.echo(f"✓ Marked complete (no longer in Todoist): {_extract_content(ln)}")
+        else:
+            orphaned.append(ln)
 
     all_lines = active_lines + preserved + orphaned
     tmp = output.parent / f".{output.name}.tmp"
@@ -1917,16 +1912,17 @@ def format_duration(seconds: int) -> str:
     return f"{minutes}m"
 
 
-def parse_project_segments(project_name: str) -> tuple[str, str]:
-    """Split a bartib project string into (client, project).
+def parse_project_segments(project_name: str) -> tuple[str, str, list[str]]:
+    """Split a bartib project string into (client, project, tags).
 
-    Tags (third segment onward) are ignored for grouping purposes.
-    Projects with no '::' separator are returned as ('(other)', project_name).
+    Format: "client::project::tag1,tag2"
+    Projects with no '::' separator are returned as ('(other)', project_name, []).
     """
     parts = project_name.split("::")
     if len(parts) == 1:
-        return "(other)", parts[0]
-    return parts[0], parts[1]
+        return "(other)", parts[0], []
+    tags = [t for t in parts[2].split(",") if t] if len(parts) >= 3 else []
+    return parts[0], parts[1], tags
 
 
 @dataclass
@@ -1937,6 +1933,7 @@ class ReportEntry:
     project: str
     description: str
     seconds: int
+    tags: list[str]
 
 
 def build_report_entries(records: list[TaskTimeTracking], now: datetime) -> list[ReportEntry]:
@@ -1950,13 +1947,14 @@ def build_report_entries(records: list[TaskTimeTracking], now: datetime) -> list
         seconds = max(0, int((end - start).total_seconds()))
         if seconds == 0:
             continue
-        client, project = parse_project_segments(record.project_name)
+        client, project, tags = parse_project_segments(record.project_name)
         entries.append(
             ReportEntry(
                 client=client,
                 project=project,
                 description=record.task_name,
                 seconds=seconds,
+                tags=tags,
             )
         )
     return entries
@@ -1967,20 +1965,22 @@ def format_report(entries: list[ReportEntry]) -> str:
     if not entries:
         return "No tracked time found for this period."
 
-    total_seconds = sum(e.seconds for e in entries)
-
-    # Aggregate: client → project → list of (description, seconds)
     from collections import defaultdict
+
+    total_seconds = sum(e.seconds for e in entries)
 
     client_seconds: dict[str, int] = defaultdict(int)
     project_seconds: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     project_descriptions: dict[str, dict[str, list[str]]] = defaultdict(lambda: defaultdict(list))
+    label_seconds: dict[str, int] = defaultdict(int)
 
     for entry in entries:
         client_seconds[entry.client] += entry.seconds
         project_seconds[entry.client][entry.project] += entry.seconds
         if entry.description not in project_descriptions[entry.client][entry.project]:
             project_descriptions[entry.client][entry.project].append(entry.description)
+        for tag in entry.tags:
+            label_seconds[tag] += entry.seconds
 
     total_hours = total_seconds / 3600
     lines = [f"Total: {total_hours:.1f}h\n"]
@@ -1998,6 +1998,11 @@ def format_report(entries: list[ReportEntry]) -> str:
             lines.append(f"  - {project}: {p_frac:.2f}")
             for desc in project_descriptions[client][project]:
                 lines.append(f"    - {desc}")
+
+    if label_seconds:
+        lines.append("\nLabels")
+        for tag in sorted(label_seconds, key=lambda t: label_seconds[t], reverse=True):
+            lines.append(f"  {tag}  {label_seconds[tag] / total_seconds:.2f}")
 
     return "\n".join(lines)
 
@@ -2395,6 +2400,7 @@ def time_report(
     date: str | None = typer.Option(None, "--date", help="Report for a specific date (YYYY-MM-DD)"),
     from_date: str | None = typer.Option(None, "--from", help="Start date (YYYY-MM-DD)"),
     to_date: str | None = typer.Option(None, "--to", help="End date (YYYY-MM-DD, inclusive)"),
+    week: bool = typer.Option(False, "--week", help="Report for the current Mon–Sun week"),
 ):
     """Daily summary report grouped by client and project."""
     from datetime import timedelta
@@ -2402,7 +2408,10 @@ def time_report(
     try:
         today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
 
-        if from_date or to_date:
+        if week:
+            start = today - timedelta(days=today.weekday())  # Monday
+            end_day = start + timedelta(days=6)  # Sunday
+        elif from_date or to_date:
             start = datetime.strptime(from_date, "%Y-%m-%d") if from_date else today
             end_day = datetime.strptime(to_date, "%Y-%m-%d") if to_date else today
         elif date:
