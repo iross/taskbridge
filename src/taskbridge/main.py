@@ -277,6 +277,31 @@ def config_client_alias(
     typer.echo(f"✅ {variant.lower()} → {canonical}")
 
 
+@config_app.command("project-alias")
+def config_project_alias(
+    variant: str | None = typer.Argument(None, help="Variant name to alias (e.g. 'nairr-pilot')"),
+    canonical: str | None = typer.Argument(None, help="Canonical form (e.g. 'NAIRR-Pilot')"),
+):
+    """Set or list project name aliases for report normalization."""
+    if variant is None:
+        aliases = config_manager.get_project_aliases()
+        if not aliases:
+            typer.echo("No project aliases configured.")
+            typer.echo("  Usage: taskbridge config project-alias <variant> <canonical>")
+            return
+        typer.echo("Project aliases:")
+        for v, c in sorted(aliases.items()):
+            typer.echo(f"  {v} → {c}")
+        return
+
+    if canonical is None:
+        typer.echo("❌ Provide both variant and canonical name.")
+        raise typer.Exit(1) from None
+
+    config_manager.set_project_alias(variant, canonical)
+    typer.echo(f"✅ {variant.lower()} → {canonical}")
+
+
 # ============================================================================
 # TASK COMMANDS
 # ============================================================================
@@ -1949,7 +1974,8 @@ def parse_project_segments(project_name: str) -> tuple[str, str, list[str]]:
         return "(other)", parts[0], []
     tags = [t for t in parts[2].split(",") if t] if len(parts) >= 3 else []
     client = config_manager.resolve_client_name(parts[0])
-    return client, parts[1], tags
+    project = config_manager.resolve_project_name(parts[1])
+    return client, project, tags
 
 
 @dataclass

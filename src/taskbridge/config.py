@@ -112,6 +112,23 @@ class Config:
         """Return canonical client name, falling back to the original if no alias exists."""
         return self.get_client_aliases().get(name.lower(), name)
 
+    def get_project_aliases(self) -> dict[str, str]:
+        """Get project name aliases mapping variant → canonical.
+
+        Keys are stored lowercase for case-insensitive lookup.
+        """
+        return self.get("project_aliases", {})
+
+    def set_project_alias(self, variant: str, canonical: str) -> None:
+        """Map a variant project name to its canonical form."""
+        aliases = self.get_project_aliases()
+        aliases[variant.lower()] = canonical
+        self.set("project_aliases", aliases)
+
+    def resolve_project_name(self, name: str) -> str:
+        """Return canonical project name, falling back to the original if no alias exists."""
+        return self.get_project_aliases().get(name.lower(), name)
+
     def get_todoist_project_mappings(self) -> dict[str, dict[str, str]]:
         """Get Todoist project to Obsidian folder mappings.
 
