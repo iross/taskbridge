@@ -2549,7 +2549,7 @@ def time_report(
                 secs = day_seconds.get(day_key, 0)
                 hours = secs / 3600
                 day_label = cursor.strftime("%a %Y-%m-%d")
-                gap_marker = "  ← no time logged" if secs == 0 else ""
+                gap_marker = "  ← no time logged" if secs == 0 and cursor < today else ""
                 typer.echo(f"  {day_label}  {hours:.1f}h{gap_marker}")
                 cursor += timedelta(days=1)
             typer.echo("")
