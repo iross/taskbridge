@@ -95,6 +95,23 @@ class Config:
         self.set("meetings", meetings)
         return True
 
+    def get_client_aliases(self) -> dict[str, str]:
+        """Get client name aliases mapping variant → canonical.
+
+        Keys are stored lowercase for case-insensitive lookup.
+        """
+        return self.get("client_aliases", {})
+
+    def set_client_alias(self, variant: str, canonical: str) -> None:
+        """Map a variant client name to its canonical form."""
+        aliases = self.get_client_aliases()
+        aliases[variant.lower()] = canonical
+        self.set("client_aliases", aliases)
+
+    def resolve_client_name(self, name: str) -> str:
+        """Return canonical client name, falling back to the original if no alias exists."""
+        return self.get_client_aliases().get(name.lower(), name)
+
     def get_todoist_project_mappings(self) -> dict[str, dict[str, str]]:
         """Get Todoist project to Obsidian folder mappings.
 

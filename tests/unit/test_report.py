@@ -220,7 +220,7 @@ class TestFormatReport:
         output = format_report(entries)
 
         assert "Labels" in output
-        assert "meeting  0.50" in output
+        assert "meeting  30m" in output
 
     def test_label_breakdown_omitted_when_no_tags(self):
         from taskbridge.main import format_report
@@ -230,7 +230,7 @@ class TestFormatReport:
 
         assert "Labels" not in output
 
-    def test_label_fraction_of_total(self):
+    def test_label_total_time(self):
         from taskbridge.main import format_report
 
         entries = [
@@ -240,7 +240,7 @@ class TestFormatReport:
         ]
         output = format_report(entries)
 
-        assert "meeting  0.67" in output
+        assert "meeting  2h 0m" in output
 
 
 # ============================================================================

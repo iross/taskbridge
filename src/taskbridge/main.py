@@ -252,6 +252,31 @@ def config_todo_txt():
     typer.echo(f"✅ todo.txt path set to: {resolved}")
 
 
+@config_app.command("client-alias")
+def config_client_alias(
+    variant: str | None = typer.Argument(None, help="Variant name to alias (e.g. 'path')"),
+    canonical: str | None = typer.Argument(None, help="Canonical display name (e.g. 'PATh')"),
+):
+    """Set or list client name aliases for report normalization."""
+    if variant is None:
+        aliases = config_manager.get_client_aliases()
+        if not aliases:
+            typer.echo("No client aliases configured.")
+            typer.echo("  Usage: taskbridge config client-alias <variant> <canonical>")
+            return
+        typer.echo("Client aliases:")
+        for v, c in sorted(aliases.items()):
+            typer.echo(f"  {v} → {c}")
+        return
+
+    if canonical is None:
+        typer.echo("❌ Provide both variant and canonical name.")
+        raise typer.Exit(1) from None
+
+    config_manager.set_client_alias(variant, canonical)
+    typer.echo(f"✅ {variant.lower()} → {canonical}")
+
+
 # ============================================================================
 # TASK COMMANDS
 # ============================================================================
@@ -1917,12 +1942,14 @@ def parse_project_segments(project_name: str) -> tuple[str, str, list[str]]:
 
     Format: "client::project::tag1,tag2"
     Projects with no '::' separator are returned as ('(other)', project_name, []).
+    Client names are normalized via configured aliases (case-insensitive).
     """
     parts = project_name.split("::")
     if len(parts) == 1:
         return "(other)", parts[0], []
     tags = [t for t in parts[2].split(",") if t] if len(parts) >= 3 else []
-    return parts[0], parts[1], tags
+    client = config_manager.resolve_client_name(parts[0])
+    return client, parts[1], tags
 
 
 @dataclass
@@ -2002,7 +2029,7 @@ def format_report(entries: list[ReportEntry]) -> str:
     if label_seconds:
         lines.append("\nLabels")
         for tag in sorted(label_seconds, key=lambda t: label_seconds[t], reverse=True):
-            lines.append(f"  {tag}  {label_seconds[tag] / total_seconds:.2f}")
+            lines.append(f"  {tag}  {format_duration(label_seconds[tag])}")
 
     return "\n".join(lines)
 
