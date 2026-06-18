@@ -2583,6 +2583,17 @@ def time_fill(
     recent_projects = get_recent_projects(bartib_file)
     last_project: str | None = recent_projects[0] if recent_projects else None
 
+    # Pre-sort records for before/after lookup
+    sorted_records = sorted(
+        (r for r in records if r.started_at),
+        key=lambda r: r.started_at,
+    )
+
+    def _fmt_record(r: TaskTimeTracking) -> str:
+        start = r.started_at.strftime("%H:%M") if r.started_at else "?"
+        end = r.stopped_at.strftime("%H:%M") if r.stopped_at else "now"
+        return f"{r.project_name}  {r.task_name}  ({start} – {end})"
+
     filled_count = 0
     for gap_idx, (gap_start_dt, gap_end_dt) in enumerate(gaps, 1):
         gap_mins = int((gap_end_dt - gap_start_dt).total_seconds() / 60)
@@ -2591,6 +2602,21 @@ def time_fill(
             f"({gap_start_dt.strftime('%H:%M')} – {gap_end_dt.strftime('%H:%M')}, "
             f"{gap_mins // 60}h {gap_mins % 60}m) {'─' * 20}"
         )
+
+        before = next(
+            (r for r in reversed(sorted_records) if r.stopped_at and r.stopped_at <= gap_start_dt),
+            None,
+        )
+        after = next(
+            (r for r in sorted_records if r.started_at and r.started_at >= gap_end_dt),
+            None,
+        )
+        if before:
+            typer.echo(f"  Before: {_fmt_record(before)}")
+        if after:
+            typer.echo(f"  After:  {_fmt_record(after)}")
+        if before or after:
+            typer.echo("")
 
         # Find calendar events overlapping this gap
         overlapping = [ev for ev in cal_events if ev.start < gap_end_dt and ev.end > gap_start_dt]
