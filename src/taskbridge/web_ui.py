@@ -114,7 +114,7 @@ HTML = """<!DOCTYPE html>
     .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
     .form-full { margin-bottom: 12px; }
     label { display: block; font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); margin-bottom: 4px; }
-    select, input[type="text"], input[type="datetime-local"] {
+    select, input[type="text"], input[type="datetime-local"], input[type="time"] {
       width: 100%;
       background: var(--input-bg);
       color: var(--text);
@@ -125,6 +125,9 @@ HTML = """<!DOCTYPE html>
       font-size: 0.88rem;
     }
     select:focus, input:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+    .form-time-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+    .form-time-row input[type="time"] { width: auto; }
+    .opt { font-weight: 400; opacity: 0.55; text-transform: none; letter-spacing: 0; }
     .form-actions { display: flex; justify-content: space-between; align-items: center; }
     .err { color: var(--danger); font-size: 0.82rem; }
     .day-group { margin-bottom: 18px; }
@@ -330,6 +333,16 @@ HTML = """<!DOCTYPE html>
       <label for="description">Description</label>
       <input id="description" type="text" list="desc-list" placeholder="What are you working on?">
       <datalist id="desc-list"></datalist>
+    </div>
+    <div class="form-time-row">
+      <div>
+        <label for="time-from">From <span class="opt">optional</span></label>
+        <input id="time-from" type="time">
+      </div>
+      <div>
+        <label for="time-to">To <span class="opt">optional — completes entry</span></label>
+        <input id="time-to" type="time">
+      </div>
     </div>
     <div class="form-actions">
       <span class="err" id="form-err"></span>
@@ -835,12 +848,18 @@ HTML = """<!DOCTYPE html>
     else if (projectVal.startsWith('bartib:')) body.project_raw = projectVal.slice(7);
     if (taskId) body.todoist_task_id = taskId;
     if (isMeeting) body.is_meeting = true;
+    var timeFrom = document.getElementById('time-from').value;
+    var timeTo = document.getElementById('time-to').value;
+    if (timeFrom) body.time_from = timeFrom;
+    if (timeTo) body.time_to = timeTo;
     fetch('/api/start', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
       .then(function(r){ return r.json(); }).then(function(data) {
         if (data.success) {
           document.getElementById('description').value = '';
           document.getElementById('task-search').value = '';
           document.getElementById('task-id').value = '';
+          document.getElementById('time-from').value = '';
+          document.getElementById('time-to').value = '';
           isMeeting = false;
           document.getElementById('btn-meeting').classList.remove('on');
           document.getElementById('meeting-adhoc-item').classList.remove('on');
@@ -1364,13 +1383,38 @@ class TimeWebHandler(BaseHTTPRequestHandler):
             if is_meeting:
                 bartib_project = f"{bartib_project}::meeting"
 
-            bartib.start_tracking(description=description, project=bartib_project)
-            db.create_tracking_record(
-                todoist_task_id=todoist_task_id,
-                project_name=bartib_project,
-                task_name=description,
-                started_at=datetime.now(),
-            )
+            time_from = body.get("time_from", "").strip()  # HH:MM or ""
+            time_to = body.get("time_to", "").strip()  # HH:MM or ""
+
+            today = datetime.now().strftime("%Y-%m-%d")
+            if time_from and time_to:
+                # Completed past entry — write directly, no live session
+                from .main import append_bartib_entry
+
+                start_dt = datetime.strptime(f"{today} {time_from}", "%Y-%m-%d %H:%M")
+                end_dt = datetime.strptime(f"{today} {time_to}", "%Y-%m-%d %H:%M")
+                if end_dt <= start_dt:
+                    self._send_json({"success": False, "error": "To must be after From"}, 400)
+                    return
+                append_bartib_entry(bartib_project, description, start_dt, end_dt)
+            else:
+                # Live session — optionally backdated
+                bartib.start_tracking(
+                    description=description,
+                    project=bartib_project,
+                    start_time=time_from or None,
+                )
+                started_at = (
+                    datetime.strptime(f"{today} {time_from}", "%Y-%m-%d %H:%M")
+                    if time_from
+                    else datetime.now()
+                )
+                db.create_tracking_record(
+                    todoist_task_id=todoist_task_id,
+                    project_name=bartib_project,
+                    task_name=description,
+                    started_at=started_at,
+                )
             self._send_json({"success": True, "project": bartib_project})
 
         except Exception as e:
