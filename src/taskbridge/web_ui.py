@@ -618,9 +618,10 @@ HTML = """<!DOCTYPE html>
   function refreshStatus() {
     var dot = document.getElementById('dot');
     dot.style.opacity = '0.3';
+    var editOpen = !!document.querySelector('.activity-edit[style*="display: block"]');
     fetch('/api/status').then(function(r){ return r.json(); }).then(function(data) {
       renderCurrent(data.current);
-      renderActivities(data.activities);
+      if (!editOpen) renderActivities(data.activities);
       dot.style.opacity = '1';
     }).catch(function() { dot.style.opacity = '1'; });
   }
