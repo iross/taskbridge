@@ -1092,7 +1092,7 @@ def _get_recent_bartib_projects(limit: int = 10) -> list[str]:
 def _sanitize_name(name: str) -> str:
     cleaned = re.sub(r"[^\w\s-]", "", name)
     cleaned = re.sub(r"\s+", "-", cleaned.strip())
-    cleaned = re.sub(r"-+", "-", cleaned).strip("-").lower()
+    cleaned = re.sub(r"-+", "-", cleaned).strip("-")
     return cleaned if cleaned else "general"
 
 
