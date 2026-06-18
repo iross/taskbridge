@@ -2531,6 +2531,29 @@ def time_report(
         report = format_report(entries)
 
         typer.echo(f"Report: {label}\n")
+
+        if start != end_day:
+            from collections import defaultdict
+
+            day_seconds: dict[str, int] = defaultdict(int)
+            for r in records:
+                if r.started_at:
+                    day_key = r.started_at.strftime("%Y-%m-%d")
+                    r_end = r.stopped_at or datetime.now()
+                    day_seconds[day_key] += max(0, int((r_end - r.started_at).total_seconds()))
+
+            typer.echo("Daily")
+            cursor = start
+            while cursor <= end_day:
+                day_key = cursor.strftime("%Y-%m-%d")
+                secs = day_seconds.get(day_key, 0)
+                hours = secs / 3600
+                day_label = cursor.strftime("%a %Y-%m-%d")
+                gap_marker = "  ← no time logged" if secs == 0 else ""
+                typer.echo(f"  {day_label}  {hours:.1f}h{gap_marker}")
+                cursor += timedelta(days=1)
+            typer.echo("")
+
         typer.echo(report)
 
     except (ValueError, RuntimeError) as e:
