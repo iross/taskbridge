@@ -1,6 +1,5 @@
 """Main CLI entry point for TaskBridge."""
 
-import contextlib
 import subprocess
 import urllib.parse
 from dataclasses import dataclass
@@ -740,7 +739,6 @@ def task_select(
 def task_note(
     task_id: str,
     open_note: bool = typer.Option(True, "--open/--no-open", help="Open note after creation"),
-    focus: bool = typer.Option(True, "--focus/--no-focus", help="Start Raycast Focus session"),
 ):
     """Create or recreate an Obsidian note for a Todoist task."""
     if not config_manager.get_todoist_token():
@@ -843,8 +841,6 @@ def task_note(
                 started_at=datetime.now(),
             )
 
-            if focus:
-                start_focus_session(task.content)
             typer.echo("✅ Time tracking started")
 
         except Exception as e:
@@ -1867,18 +1863,6 @@ def export_todo_txt(
 # ============================================================================
 
 
-def start_focus_session(title: str = "") -> None:
-    """Start a Raycast Focus session, copying title to clipboard. Best-effort, never raises."""
-    with contextlib.suppress(Exception):
-        if title:
-            subprocess.run(["pbcopy"], input=title.encode(), timeout=5)
-        subprocess.run(
-            ["open", "raycast://extensions/raycast/raycast-focus/start-focus-session"],
-            capture_output=True,
-            timeout=5,
-        )
-
-
 def sanitize_project_name(name: str) -> str:
     """Sanitize project name (remove emojis, special chars, normalize)."""
     import re
@@ -2353,7 +2337,6 @@ def stop_tracking_internal(tracking: TaskTimeTracking) -> tuple[bool, int]:
 def time_start(
     task: str | None = typer.Option(None, "--task", "-t", help="Todoist task ID to link"),
     note: str | None = typer.Option(None, "--note", "-n", help="Note/description for tracking"),
-    focus: bool = typer.Option(True, "--focus/--no-focus", help="Start Raycast Focus session"),
 ):
     """Start time tracking, optionally linked to a Todoist task."""
     try:
@@ -2408,8 +2391,6 @@ def time_start(
                 started_at=datetime.now(),
             )
 
-            if focus:
-                start_focus_session(todoist_task.content)
             typer.echo(f"▶️  Started tracking: {todoist_task.content}")
             typer.echo(f"   📁 Project: {bartib_project}")
             typer.echo(f"   🔗 Task ID: {task}")
@@ -2954,7 +2935,6 @@ def meeting_start(
     project: str = typer.Option("", "--project", "-p", help="Project (overrides definition)"),
     client: str = typer.Option("", "--client", "-c", help="Client (overrides definition)"),
     tags: str = typer.Option("", "--tags", "-t", help="Comma-separated tags (overrides)"),
-    focus: bool = typer.Option(True, "--focus/--no-focus", help="Start Raycast Focus session"),
 ):
     """Start tracking a meeting. NAME is an alias or an ad-hoc description."""
     try:
@@ -2998,8 +2978,6 @@ def meeting_start(
             started_at=datetime.now(),
         )
 
-        if focus:
-            start_focus_session(description)
         typer.echo(f"▶️  Meeting: {description}")
         typer.echo(f"   📁 {bartib_project}")
         if definition:
