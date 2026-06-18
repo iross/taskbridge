@@ -2214,6 +2214,51 @@ def append_bartib_entry(project: str, description: str, start: datetime, end: da
         f.write(line)
 
 
+def extend_bartib_entry(
+    record: TaskTimeTracking,
+    new_start: datetime | None = None,
+    new_end: datetime | None = None,
+) -> None:
+    """Rewrite one bartib line to extend its start or end time.
+
+    Matches the line by the record's original started_at, project_name, and task_name.
+    Raises RuntimeError if BARTIB_FILE is not set or the line is not found.
+    """
+    import os
+
+    bartib_file = os.environ.get("BARTIB_FILE")
+    if not bartib_file:
+        raise RuntimeError("BARTIB_FILE environment variable is not set.")
+
+    assert record.started_at is not None
+    old_start_str = record.started_at.strftime("%Y-%m-%d %H:%M")
+    old_end_str = record.stopped_at.strftime("%Y-%m-%d %H:%M") if record.stopped_at else None
+
+    # Build the original time prefix to match against
+    old_time_prefix = f"{old_start_str} - {old_end_str}" if old_end_str else old_start_str
+
+    start_str = (new_start or record.started_at).strftime("%Y-%m-%d %H:%M")
+    end_dt = new_end or record.stopped_at
+    end_str = end_dt.strftime("%Y-%m-%d %H:%M") if end_dt else None
+    new_time = f"{start_str} - {end_str}" if end_str else start_str
+    new_line = f"{new_time} | {record.project_name} | {record.task_name}\n"
+
+    target = f"{old_time_prefix} | {record.project_name} | {record.task_name}"
+
+    lines = Path(bartib_file).read_text().splitlines(keepends=True)
+    replaced = False
+    for i, line in enumerate(lines):
+        if line.rstrip("\n") == target:
+            lines[i] = new_line
+            replaced = True
+            break
+
+    if not replaced:
+        raise RuntimeError(f"Could not find bartib entry to extend: {target}")
+
+    Path(bartib_file).write_text("".join(lines))
+
+
 def parse_bartib_file(from_dt: datetime, to_dt: datetime) -> list[TaskTimeTracking]:
     """Parse the bartib activity file and return records whose start time is in [from_dt, to_dt).
 
@@ -2635,18 +2680,41 @@ def time_fill(
                 )
 
         # Ask how to handle this gap
+        options: list[str] = []
+        if before:
+            options.append("b) Extend before")
+        if after:
+            options.append("a) Extend after")
         if overlapping:
-            typer.echo("\n  s) Split by calendar events   f) Fill as one block   k) Skip   q) Quit")
-            choice = typer.prompt("  Choice", default="s").strip().lower()
-        else:
-            typer.echo("\n  f) Fill as one block   k) Skip   q) Quit")
-            choice = typer.prompt("  Choice", default="f").strip().lower()
+            options.append("s) Split by calendar events")
+        options.extend(["f) Fill as one block", "k) Skip", "q) Quit"])
+        default = "b" if before else ("a" if after else "f")
+        typer.echo("\n  " + "   ".join(options))
+        choice = typer.prompt("  Choice", default=default).strip().lower()
 
         if choice == "q":
             typer.echo("Quitting.")
             return
         if choice == "k":
             typer.echo("  Skipped.\n")
+            continue
+        if choice == "b" and before:
+            try:
+                extend_bartib_entry(before, new_end=gap_end_dt)
+                typer.echo(f"  ✓ Extended '{before.task_name}' to {gap_end_dt.strftime('%H:%M')}\n")
+                filled_count += 1
+            except RuntimeError as e:
+                typer.echo(f"  ❌ {e}\n")
+            continue
+        if choice == "a" and after:
+            try:
+                extend_bartib_entry(after, new_start=gap_start_dt)
+                typer.echo(
+                    f"  ✓ Extended '{after.task_name}' back to {gap_start_dt.strftime('%H:%M')}\n"
+                )
+                filled_count += 1
+            except RuntimeError as e:
+                typer.echo(f"  ❌ {e}\n")
             continue
 
         # Build list of sub-blocks to fill
