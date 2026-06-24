@@ -2820,6 +2820,144 @@ def time_fill(
     typer.echo(f"Done. Added {filled_count} entr{'y' if filled_count == 1 else 'ies'}.")
 
 
+@time_app.command("calendar")
+def time_calendar(
+    date: str | None = typer.Option(
+        None, "--date", help="Date to import from (YYYY-MM-DD, default: today)"
+    ),
+):
+    """Guided import of Google Calendar events as time tracking entries."""
+    import os
+    from datetime import timedelta
+
+    bartib_file = os.environ.get("BARTIB_FILE")
+    if not bartib_file:
+        typer.echo("❌ BARTIB_FILE environment variable is not set.")
+        raise typer.Exit(1) from None
+
+    gcal_creds = config_manager.get_gcal_credentials_path()
+    if not gcal_creds:
+        typer.echo("❌ Google Calendar not configured. Run: taskbridge config gcal")
+        raise typer.Exit(1) from None
+
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    if date:
+        try:
+            target_date = datetime.strptime(date, "%Y-%m-%d")
+        except ValueError:
+            typer.echo(f"❌ Invalid date format: {date} (expected YYYY-MM-DD)")
+            raise typer.Exit(1) from None
+    else:
+        target_date = today
+
+    typer.echo(f"\nFetching calendar events for {target_date.strftime('%Y-%m-%d')}...")
+    try:
+        from taskbridge.gcal_integration import GoogleCalendarClient
+
+        gcal = GoogleCalendarClient(
+            credentials_path=gcal_creds,
+            token_path=config_manager.get_gcal_token_path(),
+        )
+        events = gcal.get_events(target_date, config_manager.get_gcal_calendar_id())
+    except Exception as e:
+        typer.echo(f"❌ Could not fetch calendar events: {e}")
+        raise typer.Exit(1) from None
+
+    timed_events = [e for e in events if (e.end - e.start).total_seconds() < 86400]
+    skipped_allday = len(events) - len(timed_events)
+    if skipped_allday:
+        typer.echo(f"  (skipping {skipped_allday} all-day event(s))")
+
+    if not timed_events:
+        typer.echo("No timed calendar events found for this day.")
+        return
+
+    typer.echo(f"Found {len(timed_events)} timed event(s)\n")
+
+    try:
+        existing = parse_bartib_file(target_date, target_date + timedelta(days=1))
+    except RuntimeError as e:
+        typer.echo(f"❌ {e}")
+        raise typer.Exit(1) from None
+
+    recent_projects = get_recent_projects(bartib_file, limit=5)
+    logged = 0
+    skipped = 0
+
+    for event in timed_events:
+        duration_secs = int((event.end - event.start).total_seconds())
+        start_fmt = event.start.strftime("%H:%M")
+        end_fmt = event.end.strftime("%H:%M")
+        typer.echo("─" * 52)
+        typer.echo(f"📅  {event.title}")
+        typer.echo(f"    {start_fmt} – {end_fmt}  ({format_duration(duration_secs)})")
+
+        overlapping = [
+            r
+            for r in existing
+            if r.started_at is not None
+            and r.started_at < event.end
+            and (r.stopped_at or datetime.now()) > event.start
+        ]
+        if overlapping:
+            for r in overlapping:
+                r_start = r.started_at.strftime("%H:%M") if r.started_at else "?"
+                r_end = r.stopped_at.strftime("%H:%M") if r.stopped_at else "active"
+                typer.echo(f"    ⚠️  Conflicts with: {r.task_name} ({r_start}–{r_end})")
+            if not typer.confirm("    Log anyway?", default=False):
+                skipped += 1
+                typer.echo("")
+                continue
+
+        if not typer.confirm("    Log this event?", default=True):
+            skipped += 1
+            typer.echo("")
+            continue
+
+        description = typer.prompt("    Description", default=event.title)
+
+        if recent_projects:
+            typer.echo("    Recent projects:")
+            for i, p in enumerate(recent_projects, 1):
+                typer.echo(f"      {i}) {p}")
+            typer.echo("      (or type a project / client::project)")
+            raw_project = typer.prompt("    Project").strip()
+            if raw_project.isdigit():
+                idx = int(raw_project) - 1
+                project = recent_projects[idx] if 0 <= idx < len(recent_projects) else raw_project
+            else:
+                project = raw_project
+        else:
+            project = typer.prompt("    Project (client::project)").strip()
+
+        if not project:
+            typer.echo("    No project entered, skipping.")
+            skipped += 1
+            typer.echo("")
+            continue
+
+        try:
+            append_bartib_entry(project, description, event.start, event.end)
+            typer.echo(f"    ✅ Logged → {project}")
+            logged += 1
+            existing.append(
+                TaskTimeTracking(
+                    todoist_task_id="",
+                    project_name=project,
+                    task_name=description,
+                    started_at=event.start,
+                    stopped_at=event.end,
+                )
+            )
+        except RuntimeError as e:
+            typer.echo(f"    ❌ {e}")
+
+        typer.echo("")
+
+    typer.echo("─" * 52)
+    typer.echo(f"Done — {logged} logged, {skipped} skipped.")
+
+
 @time_app.command("stats")
 def time_stats(
     project: str | None = typer.Option(None, "--project", "-p", help="Filter by project"),

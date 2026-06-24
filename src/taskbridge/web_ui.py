@@ -295,6 +295,107 @@ HTML = """<!DOCTYPE html>
     .meeting-define-actions { display: flex; gap: 6px; margin-top: 6px; }
     .btn-meeting-save { background: var(--meeting); color: #fff; padding: 5px 10px; font-size: 0.78rem; }
     .meeting-err { color: var(--danger); font-size: 0.78rem; margin-top: 4px; min-height: 1em; }
+    .btn-cal { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+    .btn-cal:hover { color: var(--text); border-color: var(--text); }
+    .cal-modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.55);
+      z-index: 200;
+      overflow-y: auto;
+      padding: 40px 16px;
+    }
+    .cal-modal.open { display: block; }
+    .cal-modal-inner {
+      max-width: 600px;
+      margin: 0 auto;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .cal-modal-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      flex-wrap: wrap;
+    }
+    .cal-modal-header span { font-weight: 600; font-size: 0.9rem; flex: 1; }
+    .cal-modal-header input[type=date] {
+      background: var(--input-bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 4px 8px;
+      font-family: inherit;
+      font-size: 0.82rem;
+    }
+    .cal-modal-close {
+      background: none;
+      border: none;
+      color: var(--muted);
+      font-size: 1.2rem;
+      cursor: pointer;
+      padding: 0 4px;
+      line-height: 1;
+    }
+    .cal-modal-close:hover { color: var(--text); }
+    .cal-events-list { padding: 8px 0; }
+    .cal-empty { color: var(--muted); font-size: 0.85rem; padding: 16px; text-align: center; }
+    .cal-event-row {
+      border-bottom: 1px solid var(--border);
+      padding: 8px 16px;
+    }
+    .cal-event-row:last-child { border-bottom: none; }
+    .cal-event-meta {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+    }
+    .cal-event-time { color: var(--muted); font-size: 0.78rem; white-space: nowrap; flex-shrink: 0; }
+    .cal-event-title { font-size: 0.88rem; font-weight: 600; flex: 1; }
+    .cal-event-dur { color: var(--muted); font-size: 0.75rem; white-space: nowrap; }
+    .cal-event-conflict {
+      font-size: 0.75rem;
+      color: #e8a000;
+      margin: 2px 0 4px;
+    }
+    .cal-event-form {
+      display: none;
+      margin-top: 8px;
+      padding: 8px 10px;
+      background: var(--input-bg);
+      border-radius: 4px;
+      border: 1px solid var(--border);
+    }
+    .cal-event-form.open { display: block; }
+    .cal-event-form label {
+      display: block;
+      font-size: 0.65rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin: 6px 0 2px;
+    }
+    .cal-event-form label:first-child { margin-top: 0; }
+    .cal-event-form input {
+      width: 100%;
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 5px 8px;
+      font-family: inherit;
+      font-size: 0.82rem;
+    }
+    .cal-event-form input:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+    .cal-form-actions { display: flex; gap: 6px; margin-top: 8px; }
+    .btn-cal-log { background: var(--accent); color: #fff; padding: 4px 10px; font-size: 0.78rem; }
+    .btn-cal-open { font-size: 0.75rem; padding: 3px 8px; margin-left: auto; flex-shrink: 0; }
+    .cal-event-logged { color: var(--accent); font-size: 0.75rem; margin-top: 3px; }
   </style>
 </head>
 <body>
@@ -379,12 +480,27 @@ HTML = """<!DOCTYPE html>
             </div>
           </div>
         </div>
+        <button class="btn btn-cal" onclick="openCalModal()">&#128197; Cal</button>
         <button class="btn btn-start" onclick="startTracking()">&#9654; Start</button>
       </div>
     </div>
   </div>
 
   <div id="activities"></div>
+
+  <div id="cal-modal" class="cal-modal">
+    <div class="cal-modal-inner">
+      <div class="cal-modal-header">
+        <span>&#128197; Import from Calendar</span>
+        <input type="date" id="cal-date">
+        <button class="btn btn-cal" onclick="loadCalendarEvents()" style="font-size:0.78rem;padding:4px 10px">Load</button>
+        <button class="cal-modal-close" onclick="closeCalModal()">&#215;</button>
+      </div>
+      <div id="cal-events-list" class="cal-events-list">
+        <div class="cal-empty">Select a date and click Load.</div>
+      </div>
+    </div>
+  </div>
 
 </div>
 <script>
@@ -419,20 +535,18 @@ HTML = """<!DOCTYPE html>
   function loadMeetings() {
     fetch('/api/meetings').then(function(r){ return r.json(); }).then(function(data) {
       var el = document.getElementById('meeting-list');
-      var meetings = data.meetings || {};
-      var aliases = Object.keys(meetings);
-      if (!aliases.length) {
+      var meetings = data.meetings || [];
+      if (!meetings.length) {
         el.innerHTML = '<div style="color:var(--muted);font-size:0.8rem;padding:5px 12px">No saved meetings</div>';
         return;
       }
       var html = '';
-      for (var i = 0; i < aliases.length; i++) {
-        var alias = aliases[i];
-        var m = meetings[alias];
+      for (var i = 0; i < meetings.length; i++) {
+        var m = meetings[i];
         html += '<div class="meeting-item">' +
-          '<span class="meeting-item-name" data-alias="' + esc(alias) + '" onclick="startSavedMeeting(this.dataset.alias)">' + esc(alias) + '</span>' +
-          '<span class="meeting-item-desc" data-alias="' + esc(alias) + '" onclick="startSavedMeeting(this.dataset.alias)">' + esc(m.description) + '</span>' +
-          '<span class="meeting-item-del" data-alias="' + esc(alias) + '" onclick="undefineMeeting(this.dataset.alias)">&#215;</span>' +
+          '<span class="meeting-item-name" data-alias="' + esc(m.alias) + '" onclick="startSavedMeeting(this.dataset.alias)">' + esc(m.alias) + '</span>' +
+          '<span class="meeting-item-desc" data-alias="' + esc(m.alias) + '" onclick="startSavedMeeting(this.dataset.alias)">' + esc(m.description) + '</span>' +
+          '<span class="meeting-item-del" data-alias="' + esc(m.alias) + '" onclick="undefineMeeting(this.dataset.alias)">&#215;</span>' +
           '</div>';
       }
       el.innerHTML = html;
@@ -966,6 +1080,134 @@ HTML = """<!DOCTYPE html>
       }).catch(function() { errEl.textContent = 'Network error'; });
   }
 
+  var calEvents = [];
+  var calRecentProjects = [];
+
+  function openCalModal() {
+    var modal = document.getElementById('cal-modal');
+    modal.classList.add('open');
+    var dateEl = document.getElementById('cal-date');
+    if (!dateEl.value) {
+      var now = new Date();
+      dateEl.value = now.getFullYear() + '-' +
+        String(now.getMonth()+1).padStart(2,'0') + '-' +
+        String(now.getDate()).padStart(2,'0');
+      loadCalendarEvents();
+    }
+  }
+
+  function closeCalModal() {
+    document.getElementById('cal-modal').classList.remove('open');
+  }
+
+  function loadCalendarEvents() {
+    var date = document.getElementById('cal-date').value;
+    if (!date) return;
+    var listEl = document.getElementById('cal-events-list');
+    listEl.innerHTML = '<div class="cal-empty">Loading…</div>';
+    fetch('/api/calendar/events?date=' + encodeURIComponent(date))
+      .then(function(r){ return r.json(); })
+      .then(function(data) {
+        if (data.error) {
+          listEl.innerHTML = '<div class="cal-empty">' + esc(data.error) + '</div>';
+          return;
+        }
+        calEvents = data.events || [];
+        calRecentProjects = data.recent_projects || [];
+        renderCalEvents();
+      })
+      .catch(function() {
+        listEl.innerHTML = '<div class="cal-empty">Failed to load events.</div>';
+      });
+  }
+
+  function renderCalEvents() {
+    var listEl = document.getElementById('cal-events-list');
+    if (!calEvents.length) {
+      listEl.innerHTML = '<div class="cal-empty">No timed events on this day.</div>';
+      return;
+    }
+    var html = '';
+    for (var i = 0; i < calEvents.length; i++) {
+      var ev = calEvents[i];
+      var conflictHtml = '';
+      if (ev.conflicts && ev.conflicts.length) {
+        for (var c = 0; c < ev.conflicts.length; c++) {
+          var cf = ev.conflicts[c];
+          conflictHtml += '<div class="cal-event-conflict">&#9888; Conflicts with: ' +
+            esc(cf.task_name) + ' (' + esc(cf.start) + '&#8211;' + esc(cf.end) + ')</div>';
+        }
+      }
+      var projectSuggestions = '';
+      if (calRecentProjects.length) {
+        projectSuggestions = '<datalist id="cal-proj-list-' + i + '">';
+        for (var p = 0; p < calRecentProjects.length; p++) {
+          projectSuggestions += '<option value="' + esc(calRecentProjects[p]) + '">';
+        }
+        projectSuggestions += '</datalist>';
+      }
+      html += '<div class="cal-event-row" id="cal-row-' + i + '">' +
+        '<div class="cal-event-meta">' +
+        '<span class="cal-event-time">' + esc(ev.start_fmt) + '&#8211;' + esc(ev.end_fmt) + '</span>' +
+        '<span class="cal-event-title">' + esc(ev.title) + '</span>' +
+        '<span class="cal-event-dur">' + esc(ev.duration_fmt) + '</span>' +
+        '<button class="btn btn-cal-open" onclick="toggleCalForm(' + i + ')">Log</button>' +
+        '</div>' +
+        conflictHtml +
+        '<div class="cal-event-form" id="cal-form-' + i + '">' +
+        projectSuggestions +
+        '<label>Description</label>' +
+        '<input type="text" id="cal-desc-' + i + '" value="' + esc(ev.title) + '">' +
+        '<label>Project</label>' +
+        '<input type="text" id="cal-proj-' + i + '" placeholder="client::project"' +
+          (calRecentProjects.length ? ' list="cal-proj-list-' + i + '"' : '') + '>' +
+        '<div class="cal-form-actions">' +
+        '<button class="btn btn-cal-log" onclick="logCalEvent(' + i + ')">Log Entry</button>' +
+        '<button class="btn btn-cancel" onclick="toggleCalForm(' + i + ')">Cancel</button>' +
+        '<span class="cal-event-logged" id="cal-ok-' + i + '" style="display:none">&#10003; Logged</span>' +
+        '</div>' +
+        '<div class="meeting-err" id="cal-err-' + i + '"></div>' +
+        '</div>' +
+        '</div>';
+    }
+    listEl.innerHTML = html;
+  }
+
+  function toggleCalForm(idx) {
+    var form = document.getElementById('cal-form-' + idx);
+    form.classList.toggle('open');
+  }
+
+  function logCalEvent(idx) {
+    var ev = calEvents[idx];
+    var desc = document.getElementById('cal-desc-' + idx).value.trim();
+    var proj = document.getElementById('cal-proj-' + idx).value.trim();
+    var errEl = document.getElementById('cal-err-' + idx);
+    errEl.textContent = '';
+    if (!desc || !proj) {
+      errEl.textContent = 'Description and project are required.';
+      return;
+    }
+    fetch('/api/calendar/log', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({start: ev.start_iso, end: ev.end_iso, description: desc, project: proj})
+    }).then(function(r){ return r.json(); }).then(function(data) {
+      if (data.success) {
+        var okEl = document.getElementById('cal-ok-' + idx);
+        okEl.style.display = 'inline';
+        document.getElementById('cal-form-' + idx).classList.remove('open');
+        refreshStatus();
+      } else {
+        errEl.textContent = data.error || 'Failed to log entry.';
+      }
+    }).catch(function() { errEl.textContent = 'Network error.'; });
+  }
+
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') closeCalModal();
+  });
+
   document.getElementById('project-select').addEventListener('change', onProjectChange);
   document.getElementById('task-search').addEventListener('focus', renderTaskDd);
   document.getElementById('task-search').addEventListener('input', function() {
@@ -1109,6 +1351,65 @@ def _get_recent_bartib_projects(limit: int = 10) -> list[str]:
     return projects
 
 
+def _parse_bartib_for_day(target_date: datetime) -> list:
+    """Return bartib records whose start falls on target_date."""
+    from datetime import timedelta
+
+    from .database import TaskTimeTracking
+
+    bartib_file = os.environ.get("BARTIB_FILE", "")
+    if not bartib_file:
+        return []
+    day_start = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end = day_start + timedelta(days=1)
+    records: list[TaskTimeTracking] = []
+    try:
+        with open(bartib_file) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split(" | ", 2)
+                if len(parts) != 3:
+                    continue
+                time_part, project_name, task_name = parts
+                if " - " in time_part:
+                    start_str, stop_str = time_part.split(" - ", 1)
+                    started_at = datetime.strptime(start_str.strip(), "%Y-%m-%d %H:%M")
+                    stopped_at = datetime.strptime(stop_str.strip(), "%Y-%m-%d %H:%M")
+                else:
+                    started_at = datetime.strptime(time_part.strip(), "%Y-%m-%d %H:%M")
+                    stopped_at = None
+                if day_start <= started_at < day_end:
+                    records.append(
+                        TaskTimeTracking(
+                            todoist_task_id="",
+                            project_name=project_name,
+                            task_name=task_name,
+                            started_at=started_at,
+                            stopped_at=stopped_at,
+                        )
+                    )
+    except OSError:
+        pass
+    return records
+
+
+def _append_bartib_entry(project: str, description: str, start: datetime, end: datetime) -> None:
+    """Append a completed entry directly to the bartib file."""
+    bartib_file = os.environ.get("BARTIB_FILE", "")
+    if not bartib_file:
+        raise RuntimeError(
+            "BARTIB_FILE environment variable is not set. "
+            "Set it to the path of your bartib activity log."
+        )
+    start_str = start.strftime("%Y-%m-%d %H:%M")
+    end_str = end.strftime("%Y-%m-%d %H:%M")
+    line = f"{start_str} - {end_str} | {project} | {description}\n"
+    with open(bartib_file, "a") as f:
+        f.write(line)
+
+
 def _sanitize_name(name: str) -> str:
     cleaned = re.sub(r"[^\w\s-]", "", name)
     cleaned = re.sub(r"\s+", "-", cleaned.strip())
@@ -1243,6 +1544,9 @@ class TimeWebHandler(BaseHTTPRequestHandler):
             self._handle_tasks(project_id)
         elif path == "/api/meetings":
             self._handle_meetings_list()
+        elif path == "/api/calendar/events":
+            date_str = parse_qs(parsed.query).get("date", [""])[0]
+            self._handle_calendar_events(date_str)
         else:
             self.send_response(404)
             self.end_headers()
@@ -1274,6 +1578,8 @@ class TimeWebHandler(BaseHTTPRequestHandler):
             self._handle_meeting_define(body)
         elif path == "/api/meeting/undefine":
             self._handle_meeting_undefine(body)
+        elif path == "/api/calendar/log":
+            self._handle_calendar_log(body)
         else:
             self.send_response(404)
             self.end_headers()
@@ -1616,7 +1922,14 @@ class TimeWebHandler(BaseHTTPRequestHandler):
     def _handle_meetings_list(self):
         from .config import config as config_manager
 
-        self._send_json({"meetings": config_manager.get_meetings()})
+        meetings = config_manager.get_meetings()
+        usage = config_manager.get_meeting_usage()
+        ordered = sorted(
+            [{"alias": alias, **defn} for alias, defn in meetings.items()],
+            key=lambda m: usage.get(m["alias"], 0),
+            reverse=True,
+        )
+        self._send_json({"meetings": ordered})
 
     def _handle_meeting_start(self, body: dict):
         try:
@@ -1652,6 +1965,7 @@ class TimeWebHandler(BaseHTTPRequestHandler):
                 task_name=description,
                 started_at=datetime.now(),
             )
+            config_manager.increment_meeting_usage(alias)
             self._send_json({"success": True, "project": bartib_project})
         except Exception as e:
             self._send_json({"success": False, "error": str(e)}, 500)
@@ -1690,6 +2004,98 @@ class TimeWebHandler(BaseHTTPRequestHandler):
                 self._send_json({"success": True})
             else:
                 self._send_json({"success": False, "error": f"No meeting named '{alias}'"}, 404)
+        except Exception as e:
+            self._send_json({"success": False, "error": str(e)}, 500)
+
+    def _handle_calendar_events(self, date_str: str):
+        from .config import config as config_manager
+
+        gcal_creds = config_manager.get_gcal_credentials_path()
+        if not gcal_creds:
+            self._send_json(
+                {"error": "Google Calendar not configured. Run: taskbridge config gcal"}
+            )
+            return
+
+        try:
+            target_date = datetime.strptime(date_str, "%Y-%m-%d") if date_str else datetime.now()
+        except ValueError:
+            self._send_json({"error": f"Invalid date: {date_str}"}, 400)
+            return
+
+        try:
+            from .gcal_integration import GoogleCalendarClient
+
+            gcal = GoogleCalendarClient(
+                credentials_path=gcal_creds,
+                token_path=config_manager.get_gcal_token_path(),
+            )
+            events = gcal.get_events(target_date, config_manager.get_gcal_calendar_id())
+        except Exception as e:
+            self._send_json({"error": f"Could not fetch calendar events: {e}"})
+            return
+
+        timed_events = [e for e in events if (e.end - e.start).total_seconds() < 86400]
+
+        bartib_file = os.environ.get("BARTIB_FILE")
+        existing: list = []
+        if bartib_file:
+            with contextlib.suppress(Exception):
+                existing = _parse_bartib_for_day(target_date)
+
+        recent_projects = _get_recent_bartib_projects(limit=8) if bartib_file else []
+
+        def _fmt_mins(secs: float) -> str:
+            m = int(secs // 60)
+            h, m = divmod(m, 60)
+            return f"{h}h {m}m" if h else f"{m}m"
+
+        result = []
+        for ev in timed_events:
+            conflicts = [
+                {
+                    "task_name": r.task_name,
+                    "start": r.started_at.strftime("%H:%M"),
+                    "end": r.stopped_at.strftime("%H:%M") if r.stopped_at else "active",
+                }
+                for r in existing
+                if r.started_at < ev.end and (r.stopped_at or datetime.now()) > ev.start
+            ]
+            result.append(
+                {
+                    "title": ev.title,
+                    "start_iso": ev.start.isoformat(),
+                    "end_iso": ev.end.isoformat(),
+                    "start_fmt": ev.start.strftime("%H:%M"),
+                    "end_fmt": ev.end.strftime("%H:%M"),
+                    "duration_fmt": _fmt_mins((ev.end - ev.start).total_seconds()),
+                    "conflicts": conflicts,
+                }
+            )
+
+        self._send_json({"events": result, "recent_projects": recent_projects})
+
+    def _handle_calendar_log(self, body: dict):
+        try:
+            start_iso = body.get("start", "")
+            end_iso = body.get("end", "")
+            description = body.get("description", "").strip()
+            project = body.get("project", "").strip()
+
+            if not all([start_iso, end_iso, description, project]):
+                self._send_json(
+                    {
+                        "success": False,
+                        "error": "start, end, description, and project are required",
+                    },
+                    400,
+                )
+                return
+
+            start_dt = datetime.fromisoformat(start_iso)
+            end_dt = datetime.fromisoformat(end_iso)
+            _append_bartib_entry(project, description, start_dt, end_dt)
+            self._send_json({"success": True})
         except Exception as e:
             self._send_json({"success": False, "error": str(e)}, 500)
 

@@ -93,7 +93,20 @@ class Config:
             return False
         del meetings[alias]
         self.set("meetings", meetings)
+        usage = self.get("meeting_usage", {})
+        usage.pop(alias, None)
+        self.set("meeting_usage", usage)
         return True
+
+    def get_meeting_usage(self) -> dict[str, int]:
+        """Get selection counts for each meeting alias."""
+        return self.get("meeting_usage", {})
+
+    def increment_meeting_usage(self, alias: str) -> None:
+        """Increment the selection count for a meeting alias."""
+        usage = self.get("meeting_usage", {})
+        usage[alias] = usage.get(alias, 0) + 1
+        self.set("meeting_usage", usage)
 
     def get_client_aliases(self) -> dict[str, str]:
         """Get client name aliases mapping variant → canonical.
