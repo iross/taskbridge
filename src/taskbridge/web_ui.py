@@ -1161,6 +1161,14 @@ HTML = """<!DOCTYPE html>
         '<label>Project</label>' +
         '<input type="text" id="cal-proj-' + i + '" placeholder="client::project"' +
           (calRecentProjects.length ? ' list="cal-proj-list-' + i + '"' : '') + '>' +
+        '<div id="cal-end-wrap-' + i + '">' +
+        '<label>End time</label>' +
+        '<input type="time" id="cal-end-' + i + '" value="' + esc(ev.end_fmt) + '">' +
+        '</div>' +
+        '<label style="flex-direction:row;text-transform:none;font-size:0.78rem;display:flex;align-items:center;gap:5px;margin-top:6px;letter-spacing:0">' +
+        '<input type="checkbox" id="cal-ongoing-' + i + '" onchange="toggleCalOngoing(' + i + ')">' +
+        'Start as current (ongoing) task' +
+        '</label>' +
         '<div class="cal-form-actions">' +
         '<button class="btn btn-cal-log" onclick="logCalEvent(' + i + ')">Log Entry</button>' +
         '<button class="btn btn-cancel" onclick="toggleCalForm(' + i + ')">Cancel</button>' +
@@ -1178,25 +1186,43 @@ HTML = """<!DOCTYPE html>
     form.classList.toggle('open');
   }
 
+  function toggleCalOngoing(idx) {
+    var ongoing = document.getElementById('cal-ongoing-' + idx).checked;
+    var endWrap = document.getElementById('cal-end-wrap-' + idx);
+    endWrap.style.opacity = ongoing ? '0.35' : '1';
+    endWrap.querySelector('input').disabled = ongoing;
+  }
+
   function logCalEvent(idx) {
     var ev = calEvents[idx];
     var desc = document.getElementById('cal-desc-' + idx).value.trim();
     var proj = document.getElementById('cal-proj-' + idx).value.trim();
+    var ongoing = document.getElementById('cal-ongoing-' + idx).checked;
     var errEl = document.getElementById('cal-err-' + idx);
     errEl.textContent = '';
     if (!desc || !proj) {
       errEl.textContent = 'Description and project are required.';
       return;
     }
+    var body = {start: ev.start_iso, description: desc, project: proj, ongoing: ongoing};
+    if (!ongoing) {
+      var endTime = document.getElementById('cal-end-' + idx).value;
+      if (!endTime) { errEl.textContent = 'End time required.'; return; }
+      // combine event date with (possibly edited) end time
+      var startDate = ev.start_iso.substring(0, 10);
+      body.end = startDate + 'T' + endTime + ':00';
+    }
     fetch('/api/calendar/log', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({start: ev.start_iso, end: ev.end_iso, description: desc, project: proj})
+      body: JSON.stringify(body)
     }).then(function(r){ return r.json(); }).then(function(data) {
       if (data.success) {
         var okEl = document.getElementById('cal-ok-' + idx);
+        okEl.textContent = data.ongoing ? '&#9654; Started' : '&#10003; Logged';
         okEl.style.display = 'inline';
         document.getElementById('cal-form-' + idx).classList.remove('open');
+        if (data.ongoing) closeCalModal();
         refreshStatus();
       } else {
         errEl.textContent = data.error || 'Failed to log entry.';
@@ -2081,21 +2107,46 @@ class TimeWebHandler(BaseHTTPRequestHandler):
             end_iso = body.get("end", "")
             description = body.get("description", "").strip()
             project = body.get("project", "").strip()
+            ongoing = bool(body.get("ongoing", False))
 
-            if not all([start_iso, end_iso, description, project]):
+            if not all([start_iso, description, project]):
                 self._send_json(
-                    {
-                        "success": False,
-                        "error": "start, end, description, and project are required",
-                    },
+                    {"success": False, "error": "start, description, and project are required"},
                     400,
                 )
                 return
 
             start_dt = datetime.fromisoformat(start_iso)
-            end_dt = datetime.fromisoformat(end_iso)
-            _append_bartib_entry(project, description, start_dt, end_dt)
-            self._send_json({"success": True})
+
+            if ongoing:
+                active = db.get_active_tracking()
+                if active:
+                    _stop_active(active)
+                bartib = BartibIntegration()
+                bartib.start_tracking(
+                    description=description,
+                    project=project,
+                    start_time=start_dt.strftime("%H:%M"),
+                )
+                db.create_tracking_record(
+                    todoist_task_id=f"cal:{start_dt.strftime('%Y%m%d%H%M')}",
+                    project_name=project,
+                    task_name=description,
+                    started_at=start_dt,
+                )
+                self._send_json({"success": True, "ongoing": True})
+            else:
+                if not end_iso:
+                    self._send_json(
+                        {"success": False, "error": "end time required for completed entries"}, 400
+                    )
+                    return
+                end_dt = datetime.fromisoformat(end_iso)
+                if end_dt <= start_dt:
+                    self._send_json({"success": False, "error": "End must be after start"}, 400)
+                    return
+                _append_bartib_entry(project, description, start_dt, end_dt)
+                self._send_json({"success": True, "ongoing": False})
         except Exception as e:
             self._send_json({"success": False, "error": str(e)}, 500)
 

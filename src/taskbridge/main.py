@@ -2936,19 +2936,57 @@ def time_calendar(
             typer.echo("")
             continue
 
+        start_ongoing = typer.confirm("    Start as ongoing (current) task?", default=False)
+
+        end_dt = event.end
+        if not start_ongoing:
+            end_time_str = typer.prompt(
+                "    End time (HH:MM)", default=event.end.strftime("%H:%M")
+            ).strip()
+            try:
+                end_h, end_m = (int(x) for x in end_time_str.split(":"))
+                end_dt = event.start.replace(hour=end_h, minute=end_m, second=0, microsecond=0)
+                if end_dt <= event.start:
+                    typer.echo("    ⚠️  End not after start, using event end time.")
+                    end_dt = event.end
+            except (ValueError, TypeError):
+                typer.echo("    Invalid time format, using event end time.")
+                end_dt = event.end
+
         try:
-            append_bartib_entry(project, description, event.start, event.end)
-            typer.echo(f"    ✅ Logged → {project}")
-            logged += 1
-            existing.append(
-                TaskTimeTracking(
-                    todoist_task_id="",
+            if start_ongoing:
+                active = db.get_active_tracking()
+                if active:
+                    stop_tracking_internal(active)
+                bartib = BartibIntegration()
+                bartib.start_tracking(
+                    description=description,
+                    project=project,
+                    start_time=event.start.strftime("%H:%M"),
+                )
+                db.create_tracking_record(
+                    todoist_task_id=f"cal:{target_date.strftime('%Y%m%d')}{event.start.strftime('%H%M')}",
                     project_name=project,
                     task_name=description,
                     started_at=event.start,
-                    stopped_at=event.end,
                 )
-            )
+                typer.echo(f"    ✅ Started (ongoing) → {project}")
+                logged += 1
+                typer.echo("")
+                break  # nothing else to log once something is active
+            else:
+                append_bartib_entry(project, description, event.start, end_dt)
+                typer.echo(f"    ✅ Logged → {project}")
+                logged += 1
+                existing.append(
+                    TaskTimeTracking(
+                        todoist_task_id="",
+                        project_name=project,
+                        task_name=description,
+                        started_at=event.start,
+                        stopped_at=end_dt,
+                    )
+                )
         except RuntimeError as e:
             typer.echo(f"    ❌ {e}")
 
