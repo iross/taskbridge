@@ -144,6 +144,19 @@ HTML = """<!DOCTYPE html>
     }
     .activity-wrap { border-bottom: 1px solid rgba(255,255,255,0.04); }
     .activity-wrap:last-child { border-bottom: none; }
+    .time-gap {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.72rem;
+      color: var(--muted);
+      padding: 2px 0;
+    }
+    .time-gap::before, .time-gap::after {
+      content: '';
+      flex: 1;
+      border-top: 1px dashed var(--border);
+    }
     .activity {
       display: grid;
       grid-template-columns: 110px 60px 1fr;
@@ -756,6 +769,16 @@ HTML = """<!DOCTYPE html>
             '</div>' +
           '</div>' +
           '</div>';
+        if (j + 1 < g.items.length) {
+          var next = g.items[j + 1];
+          if (next.stopped_at) {
+            var gapMs = new Date(a.started_at).getTime() - new Date(next.stopped_at).getTime();
+            var gapMins = Math.round(gapMs / 60000);
+            if (gapMins > 10) {
+              html += '<div class="time-gap">' + gapMins + ' min gap</div>';
+            }
+          }
+        }
       }
       html += '</div>';
     }
