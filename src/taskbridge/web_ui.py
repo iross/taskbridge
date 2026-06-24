@@ -142,7 +142,7 @@ HTML = """<!DOCTYPE html>
       border-bottom: 1px solid var(--border);
       margin-bottom: 6px;
     }
-    .activity-wrap { border-bottom: 1px solid rgba(255,255,255,0.04); }
+    .activity-wrap { border-bottom: 1px solid rgba(255,255,255,0.04); border-left: 3px solid transparent; padding-left: 8px; }
     .activity-wrap:last-child { border-bottom: none; }
     .time-gap {
       display: flex;
@@ -719,6 +719,15 @@ HTML = """<!DOCTYPE html>
       '</div>';
   }
 
+  var CLIENT_PALETTE = ['#4fc3f7','#81c784','#ffb74d','#f06292','#ba68c8','#4db6ac','#ff8a65','#a1887f','#90a4ae','#e6ee9c'];
+
+  function clientColor(project) {
+    var client = project.indexOf('::') >= 0 ? project.split('::')[0] : project;
+    var h = 0;
+    for (var i = 0; i < client.length; i++) h = (h * 31 + client.charCodeAt(i)) & 0xffff;
+    return CLIENT_PALETTE[h % CLIENT_PALETTE.length];
+  }
+
   function renderActivities(acts) {
     var el = document.getElementById('activities');
     if (!acts.length) {
@@ -746,7 +755,7 @@ HTML = """<!DOCTYPE html>
         var durS = a.duration_seconds ? fmtDur(a.duration_seconds) : '···';
         var stopInput = a.active ? '<div></div>' :
           '<div><label>End</label><input type="datetime-local" name="new_stopped_at" value="' + esc(a.stopped_at.slice(0,16)) + '"></div>';
-        html += '<div class="activity-wrap">' +
+        html += '<div class="activity-wrap" style="border-left-color:' + clientColor(a.project) + '">' +
           '<div class="activity' + (a.active ? ' running' : '') + '" onclick="toggleEdit(this)" data-key="' + esc(a.started_at) + '">' +
             '<span class="act-time">' + fmtTime(a.started_at) + '–' + endT + '</span>' +
             '<span class="act-dur">' + durS + '</span>' +
