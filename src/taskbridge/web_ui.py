@@ -404,6 +404,15 @@ HTML = """<!DOCTYPE html>
       user-select: none;
     }
     .cal-ongoing-row input[type=checkbox] { margin: 0; flex-shrink: 0; cursor: pointer; width: auto; }
+    .cal-event-form .cal-ongoing-label {
+      display: inline;
+      text-transform: none;
+      font-size: 0.82rem;
+      color: var(--text);
+      letter-spacing: 0;
+      margin: 0;
+      cursor: pointer;
+    }
     .btn-cal-log { background: var(--accent); color: #fff; padding: 4px 10px; font-size: 0.78rem; }
     .btn-cal-open { font-size: 0.75rem; padding: 3px 8px; margin-left: auto; flex-shrink: 0; }
     .cal-event-logged { color: var(--accent); font-size: 0.75rem; margin-top: 3px; }
@@ -1176,9 +1185,9 @@ HTML = """<!DOCTYPE html>
         '<label>End time</label>' +
         '<input type="time" id="cal-end-' + i + '" value="' + esc(ev.end_fmt) + '">' +
         '</div>' +
-        '<div class="cal-ongoing-row" onclick="document.getElementById(\'cal-ongoing-' + i + '\').click()">' +
-        '<input type="checkbox" id="cal-ongoing-' + i + '" onchange="toggleCalOngoing(' + i + ')" onclick="event.stopPropagation()">' +
-        '<span>Start as current (ongoing) task</span>' +
+        '<div class="cal-ongoing-row">' +
+        '<input type="checkbox" id="cal-ongoing-' + i + '" onchange="toggleCalOngoing(' + i + ')">' +
+        '<label for="cal-ongoing-' + i + '" class="cal-ongoing-label">Start as current (ongoing) task</label>' +
         '</div>' +
         '<div class="cal-form-actions">' +
         '<button class="btn btn-cal-log" onclick="logCalEvent(' + i + ')">Log Entry</button>' +
