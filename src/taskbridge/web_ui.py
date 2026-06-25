@@ -55,7 +55,9 @@ HTML = """<!DOCTYPE html>
       padding: 24px 16px;
       min-height: 100vh;
     }
-    .container { max-width: 820px; margin: 0 auto; }
+    .container { max-width: 1120px; margin: 0 auto; }
+    .main-columns { display: grid; grid-template-columns: 1fr 280px; gap: 20px; align-items: start; }
+    @media (max-width: 760px) { .main-columns { grid-template-columns: 1fr; } }
     .header {
       display: flex;
       align-items: center;
@@ -175,20 +177,60 @@ HTML = """<!DOCTYPE html>
     .act-desc { color: var(--text); }
     .activity.running .act-time { color: var(--accent); }
     .activity.running .act-dur { color: var(--accent); }
-    .activity-edit {
-      display: none;
-      padding: 10px 12px 12px;
-      border-top: 1px solid var(--border);
-      background: var(--input-bg);
-      border-radius: 0 0 4px 4px;
-    }
     .edit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
-    .edit-actions { display: flex; gap: 8px; align-items: center; }
+    .edit-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
     .btn-save { background: var(--accent); color: #111; }
     .btn-resume { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
     .btn-del { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
     .btn-cancel { background: transparent; color: var(--muted); border: 1px solid var(--border); }
     .edit-err { color: var(--danger); font-size: 0.78rem; margin-left: 4px; }
+    .edit-modal {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.55); z-index: 200;
+      align-items: center; justify-content: center;
+    }
+    .edit-modal.open { display: flex; }
+    .edit-modal-inner {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 20px; width: 520px; max-width: 95vw;
+    }
+    .edit-modal-header {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 14px;
+    }
+    .edit-modal-title { font-size: 0.78rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); }
+    .edit-modal-close { background: none; border: none; color: var(--muted); font-size: 1.3rem; cursor: pointer; line-height: 1; padding: 2px 6px; }
+    .edit-modal-close:hover { color: var(--text); }
+    .report-panel {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 14px 16px;
+      position: sticky; top: 20px; max-height: 90vh; overflow-y: auto;
+    }
+    .report-heading {
+      font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.12em;
+      color: var(--muted); padding-bottom: 8px;
+      border-bottom: 1px solid var(--border); margin-bottom: 10px;
+    }
+    .report-client-row {
+      display: flex; justify-content: space-between; align-items: baseline;
+      font-size: 0.8rem; font-weight: 600; margin: 10px 0 4px;
+    }
+    .report-client-dur { color: var(--muted); font-weight: 400; font-size: 0.75rem; }
+    .report-proj-row {
+      display: flex; justify-content: space-between; align-items: baseline;
+      font-size: 0.74rem; padding: 1px 0 1px 10px; color: var(--text);
+    }
+    .report-proj-dur { color: var(--muted); font-size: 0.72rem; flex-shrink: 0; margin-left: 6px; }
+    .report-descs {
+      font-size: 0.68rem; color: var(--muted); padding: 0 0 3px 20px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .report-empty { color: var(--muted); font-size: 0.8rem; font-style: italic; }
+    .report-sep { border: none; border-top: 1px solid var(--border); margin: 8px 0; }
+    .report-label-row {
+      display: flex; justify-content: space-between; align-items: baseline;
+      font-size: 0.74rem; padding: 1px 0; color: var(--muted);
+    }
     .task-wrap { position: relative; }
     .task-input-row { display: flex; gap: 6px; }
     .task-input-row input { flex: 1; }
@@ -519,7 +561,27 @@ HTML = """<!DOCTYPE html>
     </div>
   </div>
 
-  <div id="activities"></div>
+  <div class="main-columns">
+    <div id="activities"></div>
+    <div id="daily-report" class="report-panel"><div class="report-empty">No data yet.</div></div>
+  </div>
+
+  <div id="edit-modal" class="edit-modal">
+    <div class="edit-modal-inner">
+      <div class="edit-modal-header">
+        <span class="edit-modal-title">Edit Entry</span>
+        <button class="edit-modal-close" onclick="closeEditModal()">&#215;</button>
+      </div>
+      <div class="edit-grid" id="edit-modal-fields"></div>
+      <div class="edit-actions">
+        <button class="btn btn-save" onclick="saveEditModal()">Save</button>
+        <button class="btn btn-resume" id="edit-modal-resume" onclick="resumeActivityModal()">&#9654; Resume</button>
+        <button class="btn btn-del" onclick="deleteActivityModal()">Delete</button>
+        <button class="btn btn-cancel" onclick="closeEditModal()">Cancel</button>
+        <span class="edit-err" id="edit-modal-err"></span>
+      </div>
+    </div>
+  </div>
 
   <div id="cal-modal" class="cal-modal">
     <div class="cal-modal-inner">
@@ -541,6 +603,11 @@ HTML = """<!DOCTYPE html>
   var elapsedTimer = null;
   var isMeeting = false;
   var meetingPanelOpen = false;
+  var activityData = {};
+  var editModalKey = null;
+  var allActivities = [];
+  var dayLabels = {};
+  var visibleDays = new Set();
 
   function toggleMeetingPanel() {
     meetingPanelOpen = !meetingPanelOpen;
@@ -729,6 +796,9 @@ HTML = """<!DOCTYPE html>
   }
 
   function renderActivities(acts) {
+    activityData = {};
+    dayLabels = {};
+    allActivities = acts;
     var el = document.getElementById('activities');
     if (!acts.length) {
       el.innerHTML = '<p style="color:var(--muted);font-size:.83rem">No activities in the last 7 days.</p>';
@@ -738,44 +808,29 @@ HTML = """<!DOCTYPE html>
     var keys = [];
     for (var i = 0; i < acts.length; i++) {
       var a = acts[i];
-      var key = new Date(a.started_at).toDateString();
-      if (!groups[key]) { groups[key] = {label: fmtDay(a.started_at), items: [], total: 0}; keys.push(key); }
-      groups[key].items.push(a);
-      if (a.duration_seconds) groups[key].total += a.duration_seconds;
+      var dk = new Date(a.started_at).toDateString();
+      if (!groups[dk]) { groups[dk] = {label: fmtDay(a.started_at), items: [], total: 0}; keys.push(dk); dayLabels[dk] = fmtDay(a.started_at); }
+      groups[dk].items.push(a);
+      if (a.duration_seconds) groups[dk].total += a.duration_seconds;
+      activityData[a.started_at] = a;
     }
     var html = '';
     for (var k = 0; k < keys.length; k++) {
       var g = groups[keys[k]];
-      html += '<div class="day-group"><div class="day-header"><span>' + esc(g.label) + '</span>';
+      html += '<div class="day-group" data-daykey="' + esc(keys[k]) + '"><div class="day-header"><span>' + esc(g.label) + '</span>';
       if (g.total) html += '<span>' + fmtDur(g.total) + '</span>';
       html += '</div>';
       for (var j = 0; j < g.items.length; j++) {
         var a = g.items[j];
         var endT = a.stopped_at ? fmtTime(a.stopped_at) : '···';
         var durS = a.duration_seconds ? fmtDur(a.duration_seconds) : '···';
-        var stopInput = a.active ? '<div></div>' :
-          '<div><label>End</label><input type="datetime-local" name="new_stopped_at" value="' + esc(a.stopped_at.slice(0,16)) + '"></div>';
+        var aKey = JSON.stringify(a.started_at);
         html += '<div class="activity-wrap" style="border-left-color:' + clientColor(a.project) + '">' +
-          '<div class="activity' + (a.active ? ' running' : '') + '" onclick="toggleEdit(this)" data-key="' + esc(a.started_at) + '">' +
+          '<div class="activity' + (a.active ? ' running' : '') + '" onclick="openEditModal(' + aKey + ')">' +
             '<span class="act-time">' + fmtTime(a.started_at) + '–' + endT + '</span>' +
             '<span class="act-dur">' + durS + '</span>' +
             '<div><div class="act-project">' + esc(a.project) + '</div>' +
             '<div class="act-desc">' + esc(a.description) + '</div></div>' +
-          '</div>' +
-          '<div class="activity-edit" data-key="' + esc(a.started_at) + '">' +
-            '<div class="edit-grid">' +
-              '<div><label>Start</label><input type="datetime-local" name="new_started_at" value="' + esc(a.started_at.slice(0,16)) + '"></div>' +
-              stopInput +
-              '<div><label>Project</label><input type="text" name="project" value="' + esc(a.project) + '"></div>' +
-              '<div><label>Description</label><input type="text" name="description" value="' + esc(a.description) + '"></div>' +
-            '</div>' +
-            '<div class="edit-actions">' +
-              '<button class="btn btn-save" onclick="saveEdit(this)">Save</button>' +
-              '<button class="btn btn-resume" onclick="resumeActivity(this)">&#9654; Resume</button>' +
-              '<button class="btn btn-del" onclick="deleteActivity(this)">Delete</button>' +
-              '<button class="btn btn-cancel" onclick="cancelEdit(this)">Cancel</button>' +
-              '<span class="edit-err"></span>' +
-            '</div>' +
           '</div>' +
           '</div>';
         if (j + 1 < g.items.length) {
@@ -792,14 +847,96 @@ HTML = """<!DOCTYPE html>
       html += '</div>';
     }
     el.innerHTML = html;
+    setupDayObserver();
+  }
+
+  function renderReport(acts, dayKey) {
+    if (!dayKey) dayKey = new Date().toDateString();
+    var panel = document.getElementById('daily-report');
+    var dayActs = acts.filter(function(a) { return new Date(a.started_at).toDateString() === dayKey; });
+    var label = dayLabels[dayKey] || dayKey;
+    if (!dayActs.length) {
+      panel.innerHTML = '<div class="report-heading">' + esc(label) + '</div><div class="report-empty">No entries.</div>';
+      return;
+    }
+    var clients = {};
+    var clientOrder = [];
+    var labels = {};
+    var labelOrder = [];
+    var totalSecs = 0;
+    for (var i = 0; i < dayActs.length; i++) {
+      var a = dayActs[i];
+      var segs = a.project.split('::');
+      var client = segs[0] || a.project;
+      var proj = segs.length > 1 ? segs[1] : '—';
+      var secs = a.duration_seconds || 0;
+      totalSecs += secs;
+      if (!clients[client]) { clients[client] = {total: 0, projects: {}, projOrder: []}; clientOrder.push(client); }
+      clients[client].total += secs;
+      if (!clients[client].projects[proj]) { clients[client].projects[proj] = {total: 0, descs: []}; clients[client].projOrder.push(proj); }
+      clients[client].projects[proj].total += secs;
+      if (a.description && clients[client].projects[proj].descs.indexOf(a.description) < 0) {
+        clients[client].projects[proj].descs.push(a.description);
+      }
+      for (var li = 2; li < segs.length; li++) {
+        var lbl = segs[li];
+        if (!labels[lbl]) { labels[lbl] = 0; labelOrder.push(lbl); }
+        labels[lbl] += secs;
+      }
+    }
+    var html = '<div class="report-heading">' + esc(label) + ' &nbsp; ' + fmtDur(totalSecs) + '</div>';
+    for (var ci = 0; ci < clientOrder.length; ci++) {
+      var cname = clientOrder[ci];
+      var c = clients[cname];
+      html += '<div class="report-client-row" style="color:' + clientColor(cname + '::x') + '">' +
+        esc(cname) + '<span class="report-client-dur">' + fmtDur(c.total) + '</span></div>';
+      for (var pi = 0; pi < c.projOrder.length; pi++) {
+        var pname = c.projOrder[pi];
+        var p = c.projects[pname];
+        html += '<div class="report-proj-row"><span>' + esc(pname.replace(/-/g, ' ')) + '</span>' +
+          '<span class="report-proj-dur">' + fmtDur(p.total) + '</span></div>';
+        if (p.descs.length) {
+          html += '<div class="report-descs">' + esc(p.descs.join(', ')) + '</div>';
+        }
+      }
+    }
+    if (labelOrder.length) {
+      html += '<hr class="report-sep">';
+      for (var li = 0; li < labelOrder.length; li++) {
+        var lbl = labelOrder[li];
+        html += '<div class="report-label-row"><span>' + esc(lbl) + '</span>' +
+          '<span class="report-proj-dur">' + fmtDur(labels[lbl]) + '</span></div>';
+      }
+    }
+    panel.innerHTML = html;
+  }
+
+  function setupDayObserver() {
+    if (window._dayObserver) window._dayObserver.disconnect();
+    visibleDays = new Set();
+    var groups = document.querySelectorAll('#activities .day-group[data-daykey]');
+    if (!groups.length) return;
+    window._dayObserver = new IntersectionObserver(function(entries) {
+      entries.forEach(function(e) {
+        var k = e.target.getAttribute('data-daykey');
+        if (e.isIntersecting) visibleDays.add(k); else visibleDays.delete(k);
+      });
+      var all = document.querySelectorAll('#activities .day-group[data-daykey]');
+      for (var i = 0; i < all.length; i++) {
+        var k = all[i].getAttribute('data-daykey');
+        if (visibleDays.has(k)) { renderReport(allActivities, k); break; }
+      }
+    }, {threshold: 0.05});
+    groups.forEach(function(g) { window._dayObserver.observe(g); });
   }
 
   function refreshStatus() {
     var dot = document.getElementById('dot');
     dot.style.opacity = '0.3';
-    var editOpen = !!document.querySelector('.activity-edit[style*="display: block"]');
+    var editOpen = document.getElementById('edit-modal').classList.contains('open');
     fetch('/api/status').then(function(r){ return r.json(); }).then(function(data) {
       renderCurrent(data.current);
+      renderReport(data.activities);
       if (!editOpen) renderActivities(data.activities);
       dot.style.opacity = '1';
     }).catch(function() { dot.style.opacity = '1'; });
@@ -1070,64 +1207,68 @@ HTML = """<!DOCTYPE html>
       });
   }
 
-  function toggleEdit(row) {
-    var editDiv = row.parentElement.querySelector('.activity-edit');
-    var isOpen = editDiv.style.display === 'block';
-    document.querySelectorAll('.activity-edit').forEach(function(d) { d.style.display = 'none'; });
-    document.querySelectorAll('.activity.editing').forEach(function(r) { r.classList.remove('editing'); });
-    if (!isOpen) {
-      editDiv.style.display = 'block';
-      row.classList.add('editing');
-    }
+  function openEditModal(key) {
+    var a = activityData[key];
+    if (!a) return;
+    editModalKey = key;
+    var stopField = a.active ? '' :
+      '<div><label>End</label><input type="datetime-local" id="em-stopped_at" value="' +
+        esc(a.stopped_at.slice(0,16)) + '"></div>';
+    document.getElementById('edit-modal-fields').innerHTML =
+      '<div><label>Start</label><input type="datetime-local" id="em-started_at" value="' +
+        esc(a.started_at.slice(0,16)) + '"></div>' +
+      stopField +
+      '<div><label>Project</label><input type="text" id="em-project" value="' + esc(a.project) + '"></div>' +
+      '<div><label>Description</label><input type="text" id="em-description" value="' + esc(a.description) + '"></div>';
+    var resumeBtn = document.getElementById('edit-modal-resume');
+    resumeBtn.style.display = a.active ? 'none' : '';
+    document.getElementById('edit-modal-err').textContent = '';
+    document.getElementById('edit-modal').classList.add('open');
   }
 
-  function saveEdit(btn) {
-    var editDiv = btn.closest('.activity-edit');
-    var errEl = editDiv.querySelector('.edit-err');
+  function closeEditModal() {
+    document.getElementById('edit-modal').classList.remove('open');
+    editModalKey = null;
+  }
+
+  function saveEditModal() {
+    var errEl = document.getElementById('edit-modal-err');
     errEl.textContent = '';
-    var stopInput = editDiv.querySelector('[name=new_stopped_at]');
+    var stopEl = document.getElementById('em-stopped_at');
     var body = {
-      original_started_at: editDiv.getAttribute('data-key'),
-      new_started_at: editDiv.querySelector('[name=new_started_at]').value,
-      new_stopped_at: stopInput ? stopInput.value : '',
-      project: editDiv.querySelector('[name=project]').value.trim(),
-      description: editDiv.querySelector('[name=description]').value.trim()
+      original_started_at: editModalKey,
+      new_started_at: document.getElementById('em-started_at').value,
+      new_stopped_at: stopEl ? stopEl.value : '',
+      project: document.getElementById('em-project').value.trim(),
+      description: document.getElementById('em-description').value.trim()
     };
     fetch('/api/activity/edit', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
       .then(function(r){ return r.json(); }).then(function(data) {
-        if (data.success) { refreshStatus(); }
+        if (data.success) { closeEditModal(); refreshStatus(); }
         else { errEl.textContent = data.error || 'Save failed'; }
       }).catch(function() { errEl.textContent = 'Network error'; });
   }
 
-  function deleteActivity(btn) {
+  function deleteActivityModal() {
     if (!confirm('Delete this entry?')) return;
-    var editDiv = btn.closest('.activity-edit');
     fetch('/api/activity/delete', {method:'POST', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({original_started_at: editDiv.getAttribute('data-key')})})
+      body:JSON.stringify({original_started_at: editModalKey})})
       .then(function(r){ return r.json(); }).then(function(data) {
-        if (data.success) refreshStatus();
+        if (data.success) { closeEditModal(); refreshStatus(); }
       });
   }
 
-  function cancelEdit(btn) {
-    var editDiv = btn.closest('.activity-edit');
-    editDiv.style.display = 'none';
-    editDiv.closest('.activity-wrap').querySelector('.activity').classList.remove('editing');
-  }
-
-  function resumeActivity(btn) {
-    var editDiv = btn.closest('.activity-edit');
-    var errEl = editDiv.querySelector('.edit-err');
+  function resumeActivityModal() {
+    var errEl = document.getElementById('edit-modal-err');
     errEl.textContent = '';
     var body = {
-      original_started_at: editDiv.getAttribute('data-key'),
-      project: editDiv.querySelector('[name=project]').value.trim(),
-      description: editDiv.querySelector('[name=description]').value.trim()
+      original_started_at: editModalKey,
+      project: document.getElementById('em-project').value.trim(),
+      description: document.getElementById('em-description').value.trim()
     };
     fetch('/api/activity/resume', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
       .then(function(r){ return r.json(); }).then(function(data) {
-        if (data.success) { refreshStatus(); cancelEdit(btn); }
+        if (data.success) { closeEditModal(); refreshStatus(); }
         else { errEl.textContent = data.error || 'Failed'; }
       }).catch(function() { errEl.textContent = 'Network error'; });
   }
