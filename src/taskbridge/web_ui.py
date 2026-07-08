@@ -93,6 +93,10 @@ HTML = """<!DOCTYPE html>
     .current-project { font-size: 0.95rem; font-weight: 600; color: var(--accent); }
     .current-desc { color: var(--text); margin: 3px 0; font-size: 0.9rem; }
     .current-meta { font-size: 0.8rem; color: var(--muted); }
+    .current-start-link { cursor: pointer; border-bottom: 1px dashed var(--muted); }
+    .current-start-link:hover { color: var(--text); border-color: var(--text); }
+    .current-start-input { width: auto; font-size: 0.8rem; padding: 2px 6px; display: inline; }
+    .btn-xs { padding: 2px 7px; font-size: 0.75rem; margin-left: 4px; }
     .idle { color: var(--muted); font-style: italic; font-size: 0.9rem; }
     .btn {
       padding: 7px 15px;
@@ -609,6 +613,7 @@ HTML = """<!DOCTYPE html>
   var elapsedTimer = null;
   var isMeeting = false;
   var meetingPanelOpen = false;
+  var currentTracking = null;
   var activityData = {};
   var editModalKey = null;
   var allActivities = [];
@@ -767,6 +772,7 @@ HTML = """<!DOCTYPE html>
       return;
     }
     card.classList.add('active');
+    currentTracking = cur;
     startedAt = new Date(cur.started_at).getTime();
     elapsedTimer = setInterval(updateElapsed, 1000);
     var elapsed = Math.floor((Date.now() - startedAt) / 1000);
@@ -782,8 +788,15 @@ HTML = """<!DOCTYPE html>
         '<div>' +
           '<div class="current-project">' + esc(cur.project) + '</div>' +
           '<div class="current-desc">' + esc(cpd.text) + tagChips(cpd.tags) + '</div>' +
-          '<div class="current-meta">Started ' + fmtTime(cur.started_at) +
-            ' &nbsp;&middot;&nbsp; <span id="elapsed">' + fmtDur(elapsed) + '</span></div>' +
+          '<div class="current-meta">' +
+            'Started <span id="current-start-display" class="current-start-link" onclick="editCurrentStart()">' + fmtTime(cur.started_at) + '</span>' +
+            '<span id="current-start-edit" style="display:none">' +
+              '<input type="time" id="current-start-input" class="current-start-input">' +
+              '<button class="btn btn-save btn-xs" onclick="saveCurrentStart()">&#10003;</button>' +
+              '<button class="btn btn-cancel btn-xs" onclick="cancelCurrentStart()">&#215;</button>' +
+            '</span>' +
+            ' &nbsp;&middot;&nbsp; <span id="elapsed">' + fmtDur(elapsed) + '</span>' +
+          '</div>' +
         '</div>' +
         '<div style="display:flex;gap:8px;align-items:flex-start">' +
           noteBtn +
@@ -791,6 +804,38 @@ HTML = """<!DOCTYPE html>
           '<button class="btn btn-stop" onclick="stopTracking()">&#9632; Stop</button>' +
         '</div>' +
       '</div>';
+  }
+
+  function editCurrentStart() {
+    if (!currentTracking) return;
+    var t = new Date(currentTracking.started_at);
+    document.getElementById('current-start-input').value =
+      String(t.getHours()).padStart(2,'0') + ':' + String(t.getMinutes()).padStart(2,'0');
+    document.getElementById('current-start-display').style.display = 'none';
+    document.getElementById('current-start-edit').style.display = 'inline';
+    document.getElementById('current-start-input').focus();
+  }
+
+  function cancelCurrentStart() {
+    document.getElementById('current-start-display').style.display = '';
+    document.getElementById('current-start-edit').style.display = 'none';
+  }
+
+  function saveCurrentStart() {
+    var newTime = document.getElementById('current-start-input').value;
+    if (!newTime || !currentTracking) return;
+    var orig = new Date(currentTracking.started_at);
+    var parts = newTime.split(':');
+    orig.setHours(parseInt(parts[0]), parseInt(parts[1]), 0, 0);
+    var pad = function(n) { return String(n).padStart(2,'0'); };
+    var newIso = orig.getFullYear() + '-' + pad(orig.getMonth()+1) + '-' + pad(orig.getDate()) +
+      'T' + pad(orig.getHours()) + ':' + pad(orig.getMinutes()) + ':00';
+    var body = { new_started_at: newIso };
+    fetch('/api/current/edit-start', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
+      .then(function(r){ return r.json(); }).then(function(data) {
+        if (data.success) refreshStatus();
+        else { cancelCurrentStart(); alert(data.error || 'Failed to update start time'); }
+      }).catch(function() { cancelCurrentStart(); alert('Network error'); });
   }
 
   var CLIENT_PALETTE = ['#4fc3f7','#81c784','#ffb74d','#f06292','#ba68c8','#4db6ac','#ff8a65','#a1887f','#90a4ae','#e6ee9c'];
@@ -869,9 +914,8 @@ HTML = """<!DOCTYPE html>
         var endT = a.stopped_at ? fmtTime(a.stopped_at) : '···';
         var durS = a.duration_seconds ? fmtDur(a.duration_seconds) : '···';
         var pd = parseTags(a.description);
-        var aKey = JSON.stringify(a.started_at);
         html += '<div class="activity-wrap" style="border-left-color:' + clientColor(a.project) + '">' +
-          '<div class="activity' + (a.active ? ' running' : '') + '" onclick="openEditModal(' + aKey + ')">' +
+          '<div class="activity' + (a.active ? ' running' : '') + '" onclick="openEditModal(&#39;' + a.started_at + '&#39;)">' +
             '<span class="act-time">' + fmtTime(a.started_at) + '–' + endT + '</span>' +
             '<span class="act-dur">' + durS + '</span>' +
             '<div><div class="act-project">' + esc(a.project) + '</div>' +
@@ -1828,6 +1872,8 @@ class TimeWebHandler(BaseHTTPRequestHandler):
             self._handle_task_create(body)
         elif path == "/api/activity/edit":
             self._handle_activity_edit(body)
+        elif path == "/api/current/edit-start":
+            self._handle_current_edit_start(body)
         elif path == "/api/activity/delete":
             self._handle_activity_delete(body)
         elif path == "/api/activity/resume":
@@ -2021,6 +2067,31 @@ class TimeWebHandler(BaseHTTPRequestHandler):
             return
         try:
             _stop_active(active)
+            self._send_json({"success": True})
+        except Exception as e:
+            self._send_json({"success": False, "error": str(e)}, 500)
+
+    def _handle_current_edit_start(self, body: dict):
+        new_start = body.get("new_started_at", "").strip()
+        if not new_start:
+            self._send_json({"success": False, "error": "new_started_at required"}, 400)
+            return
+        active = db.get_active_tracking()
+        if not active or not active.started_at:
+            self._send_json({"success": False, "error": "No active tracking"})
+            return
+        try:
+            new_dt = datetime.fromisoformat(new_start)
+            # Try to update the bartib file; ignore if the entry isn't there
+            # (can happen when the task was started outside the web UI or via CLI stop).
+            _edit_bartib_line(
+                active.started_at.isoformat(),
+                new_start,
+                "",
+                active.project_name,
+                active.task_name,
+            )
+            db.update_tracking_started_at(active, new_dt)
             self._send_json({"success": True})
         except Exception as e:
             self._send_json({"success": False, "error": str(e)}, 500)
