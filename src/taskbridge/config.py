@@ -142,6 +142,25 @@ class Config:
         """Return canonical project name, falling back to the original if no alias exists."""
         return self.get_project_aliases().get(name.lower(), name)
 
+    def get_tag_colors(self) -> dict[str, str]:
+        """Get tag → hex color overrides for pill rendering (keys lowercase)."""
+        return self.get("tag_colors", {})
+
+    def set_tag_color(self, tag: str, color: str) -> None:
+        """Override the pill color for a tag ("#rrggbb")."""
+        colors = self.get_tag_colors()
+        colors[tag.lower()] = color
+        self.set("tag_colors", colors)
+
+    def remove_tag_color(self, tag: str) -> bool:
+        """Remove a tag color override. Returns False if none existed."""
+        colors = self.get_tag_colors()
+        if tag.lower() not in colors:
+            return False
+        del colors[tag.lower()]
+        self.set("tag_colors", colors)
+        return True
+
     def get_todoist_project_mappings(self) -> dict[str, dict[str, str]]:
         """Get Todoist project to Obsidian folder mappings.
 

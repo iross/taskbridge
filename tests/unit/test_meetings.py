@@ -134,7 +134,7 @@ class TestMeetingDefineCommand:
         )
 
         assert result.exit_code == 0
-        assert "acme::meetings::standup" in result.output  # define preview doesn't add tag
+        assert "acme::meetings" in result.output  # tags live in descriptions, not the preview
 
     @patch("taskbridge.main.config_manager")
     def test_define_minimal(self, mock_cfg, runner):
@@ -165,6 +165,7 @@ class TestMeetingListCommand:
 
     @patch("taskbridge.main.config_manager")
     def test_list_shows_meetings(self, mock_cfg, runner):
+        mock_cfg.get_tag_colors.return_value = {}
         mock_cfg.get_meetings.return_value = {
             "standup": {
                 "description": "Daily Standup",
@@ -179,7 +180,7 @@ class TestMeetingListCommand:
         assert result.exit_code == 0
         assert "standup" in result.output
         assert "Daily Standup" in result.output
-        assert "acme::webapp::standup" in result.output
+        assert "acme::webapp" in result.output
 
 
 class TestMeetingUndefineCommand:
@@ -224,8 +225,8 @@ class TestMeetingStartCommand:
 
         assert result.exit_code == 0
         mock_bartib_cls.return_value.start_tracking.assert_called_once_with(
-            description="Daily Standup",
-            project="acme::webapp::standup,meeting",
+            description="Daily Standup #standup #meeting",
+            project="acme::webapp",
         )
         assert "Daily Standup" in result.output
         assert "(recurring: standup)" in result.output
@@ -244,8 +245,8 @@ class TestMeetingStartCommand:
 
         assert result.exit_code == 0
         mock_bartib_cls.return_value.start_tracking.assert_called_once_with(
-            description="1:1 with Bob",
-            project="acme::meetings::meeting",
+            description="1:1 with Bob #meeting",
+            project="acme::meetings",
         )
 
     @patch("taskbridge.main.db")
@@ -292,8 +293,8 @@ class TestMeetingStartCommand:
 
         assert result.exit_code == 0
         mock_bartib_cls.return_value.start_tracking.assert_called_once_with(
-            description="Team sync",
-            project="meetings::meeting",
+            description="Team sync #meeting",
+            project="meetings",
         )
 
     @patch("taskbridge.main.db")
@@ -334,4 +335,4 @@ class TestMeetingStartCommand:
         mock_db.create_tracking_record.assert_called_once()
         call_kwargs = mock_db.create_tracking_record.call_args[1]
         assert call_kwargs["todoist_task_id"].startswith("meeting:")
-        assert call_kwargs["task_name"] == "Retro"
+        assert call_kwargs["task_name"] == "Retro #meeting"
