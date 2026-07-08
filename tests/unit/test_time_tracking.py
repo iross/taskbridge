@@ -335,29 +335,55 @@ class TestHelperFunctions:
 
         assert result == "My-Project"
 
-    def test_build_bartib_project_with_tags(self):
-        """Test building bartib project name with tags."""
-        from taskbridge.main import build_bartib_project
+    def test_append_tags_to_description(self):
+        """Tags are appended as sanitized #tag tokens."""
+        from taskbridge.main import append_tags_to_description
 
-        result = build_bartib_project("My Project", "Acme Corp", tags=["work", "urgent"])
+        result = append_tags_to_description("Fix the bug", ["work", "Urgent Stuff"])
 
-        assert result == "Acme-Corp::My-Project::work,urgent"
+        assert result == "Fix the bug #work #Urgent-Stuff"
 
-    def test_build_bartib_project_with_tags_no_client(self):
-        """Test building bartib project name with tags but no client."""
-        from taskbridge.main import build_bartib_project
+    def test_append_tags_to_description_no_tags(self):
+        """Empty or missing tags leave the description unchanged."""
+        from taskbridge.main import append_tags_to_description
 
-        result = build_bartib_project("My Project", tags=["billable"])
+        assert append_tags_to_description("Fix the bug", []) == "Fix the bug"
+        assert append_tags_to_description("Fix the bug", None) == "Fix the bug"
 
-        assert result == "My-Project::billable"
+    def test_append_tags_to_description_no_duplicates(self):
+        """Tags already present in the description are not appended again."""
+        from taskbridge.main import append_tags_to_description
 
-    def test_build_bartib_project_no_tags(self):
-        """Test building bartib project name with empty tags list."""
-        from taskbridge.main import build_bartib_project
+        result = append_tags_to_description("Standup #meeting", ["meeting", "team"])
 
-        result = build_bartib_project("My Project", "Client", tags=[])
+        assert result == "Standup #meeting #team"
 
-        assert result == "Client::My-Project"
+    def test_split_description_tags(self):
+        """#tag tokens are extracted and stripped from the description."""
+        from taskbridge.main import split_description_tags
+
+        text, tags = split_description_tags("Standup #meeting #team")
+
+        assert text == "Standup"
+        assert tags == ["meeting", "team"]
+
+    def test_split_description_tags_none_present(self):
+        """Descriptions without tags pass through with an empty tag list."""
+        from taskbridge.main import split_description_tags
+
+        text, tags = split_description_tags("Plain description")
+
+        assert text == "Plain description"
+        assert tags == []
+
+    def test_split_description_tags_bare_hash(self):
+        """A lone # is not a tag; duplicates collapse."""
+        from taskbridge.main import split_description_tags
+
+        text, tags = split_description_tags("Issue # 5 #work #work")
+
+        assert text == "Issue # 5"
+        assert tags == ["work"]
 
 
 class TestStopTrackingInternal:

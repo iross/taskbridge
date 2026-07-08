@@ -1,5 +1,6 @@
 """Main CLI entry point for TaskBridge."""
 
+import re
 import subprocess
 import urllib.parse
 from dataclasses import dataclass
@@ -301,6 +302,44 @@ def config_project_alias(
     typer.echo(f"✅ {variant.lower()} → {canonical}")
 
 
+@config_app.command("tag-color")
+def config_tag_color(
+    tag: str | None = typer.Argument(None, help="Tag name (e.g. 'meeting')"),
+    color: str | None = typer.Argument(None, help="Hex color (e.g. '#5c7cfa')"),
+    remove: bool = typer.Option(False, "--remove", help="Remove the override for TAG"),
+):
+    """Set, list, or remove tag pill color overrides (auto-assigned when unset)."""
+    if tag is None:
+        overrides = config_manager.get_tag_colors()
+        if not overrides:
+            typer.echo("No tag colors configured — pill colors are auto-assigned.")
+            typer.echo("  Usage: taskbridge config tag-color <tag> '#rrggbb'")
+            return
+        typer.echo("Tag colors:")
+        for t in sorted(overrides):
+            typer.echo(f"  {format_tag_pill(t)}  {overrides[t]}")
+        return
+
+    if remove:
+        if config_manager.remove_tag_color(tag):
+            typer.echo(f"✅ Removed override for '{tag.lower()}' — color is auto-assigned again")
+        else:
+            typer.echo(f"❌ No color override for '{tag.lower()}'")
+            raise typer.Exit(1) from None
+        return
+
+    if color is None:
+        typer.echo("❌ Provide a hex color, e.g.: taskbridge config tag-color meeting '#5c7cfa'")
+        raise typer.Exit(1) from None
+
+    if not HEX_COLOR_RE.match(color):
+        typer.echo(f"❌ Invalid color {color!r} — expected #rrggbb (e.g. '#5c7cfa')")
+        raise typer.Exit(1) from None
+
+    config_manager.set_tag_color(tag, color)
+    typer.echo(f"✅ {format_tag_pill(tag.lower())} → {color}")
+
+
 # ============================================================================
 # TASK COMMANDS
 # ============================================================================
@@ -396,7 +435,7 @@ def task_list(
 
             # Show labels
             if task.labels:
-                typer.echo(f"   🏷️  Labels: {', '.join(task.labels)}")
+                typer.echo(f"   🏷️  Labels: {format_tag_pills(task.labels)}")
 
             # Show priority
             if task.priority > 1:
@@ -467,7 +506,7 @@ def task_show(task_id: str):
             typer.echo(f"   Current Project: {project_name} (ID: {task.project_id})")
 
             if task.labels:
-                typer.echo(f"   Labels: {', '.join(task.labels)}")
+                typer.echo(f"   Labels: {format_tag_pills(task.labels)}")
         else:
             typer.echo("\n⚠️  Task not found in Todoist (may be deleted)")
             typer.echo(f"   Task ID: {task_id}")
@@ -562,9 +601,6 @@ def task_done(
 
                 # Update status in frontmatter
                 if "status: " in content:
-                    # Replace existing status
-                    import re
-
                     content = re.sub(r'status: "[^"]*"', 'status: "done"', content)
                     content = re.sub(r"status: '[^']*'", "status: 'done'", content)
                     content = re.sub(r"status: \S+", 'status: "done"', content)
@@ -830,14 +866,15 @@ def task_note(
 
             # Start new tracking
             bartib = BartibIntegration()
-            bartib_project = build_bartib_project(project_name, client_name, tags=task.labels)
+            bartib_project = build_bartib_project(project_name, client_name)
+            description = append_tags_to_description(task.content, task.labels)
 
-            bartib.start_tracking(description=task.content, project=bartib_project)
+            bartib.start_tracking(description=description, project=bartib_project)
 
             db.create_tracking_record(
                 todoist_task_id=task_id,
                 project_name=bartib_project,
-                task_name=task.content,
+                task_name=description,
                 started_at=datetime.now(),
             )
 
@@ -1301,7 +1338,7 @@ def sync_notes(
                 project = api.get_project(task.project_id)
                 typer.echo(f"✅ {task.content}")
                 typer.echo(f"   Project: {project.name if project else 'Unknown'}")
-                typer.echo(f"   Labels: {', '.join(task.labels)}")
+                typer.echo(f"   Labels: {format_tag_pills(task.labels)}")
                 typer.echo()
             return
 
@@ -1865,8 +1902,6 @@ def export_todo_txt(
 
 def sanitize_project_name(name: str) -> str:
     """Sanitize project name (remove emojis, special chars, normalize)."""
-    import re
-
     # Remove emojis and special characters, keep alphanumeric and spaces
     cleaned = re.sub(r"[^\w\s-]", "", name)
     # Replace spaces with hyphens, strip
@@ -1911,26 +1946,113 @@ def resolve_project_info(project_id: str, api: "TodoistAPI") -> tuple[str, str]:
     return project.name, client_name
 
 
-def build_bartib_project(project: str, client: str = "", tags: list[str] | None = None) -> str:
-    """Build bartib project name encoding client, project, and tags.
+def build_bartib_project(project: str, client: str = "") -> str:
+    """Build bartib project name encoding client and project.
 
-    Format: "client::project::tag1,tag2" (client and tags are optional)
+    Format: "client::project" (client is optional). Tags belong in the entry
+    description as #tag tokens — see append_tags_to_description().
 
     Args:
         project: Project name
         client: Client name (optional)
-        tags: Task labels/tags (optional)
 
     Returns:
-        Bartib project string, e.g. "acme-corp::my-project::work,urgent"
+        Bartib project string, e.g. "acme-corp::my-project"
     """
     parts = []
     if client:
         parts.append(sanitize_project_name(client))
     parts.append(sanitize_project_name(project))
-    if tags:
-        parts.append(",".join(sanitize_project_name(t) for t in tags))
     return "::".join(parts)
+
+
+def append_tags_to_description(description: str, tags: list[str] | None) -> str:
+    """Append tags to a bartib description as #tag tokens.
+
+    Tags already present in the description are not duplicated.
+    """
+    if not tags:
+        return description
+    _, existing = split_description_tags(description)
+    new_tokens = [
+        f"#{sanitize_project_name(t)}"
+        for t in tags
+        if t and sanitize_project_name(t) not in existing
+    ]
+    if not new_tokens:
+        return description
+    return f"{description} {' '.join(new_tokens)}".strip()
+
+
+# Shared with the web UI's JS tagColor() — same colors, same hash.
+TAG_PALETTE = [
+    "#4fc3f7",
+    "#81c784",
+    "#ffb74d",
+    "#f06292",
+    "#ba68c8",
+    "#4db6ac",
+    "#ff8a65",
+    "#a1887f",
+    "#90a4ae",
+    "#e6ee9c",
+]
+
+HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def tag_color(tag: str) -> str:
+    """Hex pill color for a tag: configured override, else a stable hash into TAG_PALETTE.
+
+    Raises:
+        ValueError: If a configured override is not a #rrggbb color.
+    """
+    override = config_manager.get_tag_colors().get(tag.lower())
+    if override:
+        if not HEX_COLOR_RE.match(override):
+            raise ValueError(
+                f"Invalid tag color {override!r} for tag {tag!r} in config; expected #rrggbb. "
+                f"Fix it with: taskbridge config tag-color {tag} '#rrggbb'"
+            )
+        return override
+    h = 0
+    for ch in tag:
+        h = (h * 31 + ord(ch)) & 0xFFFF
+    return TAG_PALETTE[h % len(TAG_PALETTE)]
+
+
+def format_tag_pill(tag: str) -> str:
+    """Render a tag as a background-colored terminal pill.
+
+    Styling is dropped automatically when output is not a TTY (typer.echo strips it).
+    """
+    hex_color = tag_color(tag).lstrip("#")
+    r, g, b = (int(hex_color[i : i + 2], 16) for i in (0, 2, 4))
+    luminance = 0.299 * r + 0.587 * g + 0.114 * b
+    fg = (0, 0, 0) if luminance > 140 else (255, 255, 255)
+    return typer.style(f" {tag} ", bg=(r, g, b), fg=fg)
+
+
+def format_tag_pills(tags: list[str]) -> str:
+    """Render a list of tags as space-separated pills."""
+    return " ".join(format_tag_pill(t) for t in tags)
+
+
+def split_description_tags(description: str) -> tuple[str, list[str]]:
+    """Split a bartib description into (clean description, tags).
+
+    Tags are whitespace-delimited #tag tokens anywhere in the description.
+    """
+    tags = []
+    words = []
+    for word in description.split():
+        if len(word) > 1 and word.startswith("#"):
+            tag = word[1:]
+            if tag not in tags:
+                tags.append(tag)
+        else:
+            words.append(word)
+    return " ".join(words), tags
 
 
 def format_duration(seconds: int) -> str:
@@ -1985,11 +2107,13 @@ def build_report_entries(records: list[TaskTimeTracking], now: datetime) -> list
         if seconds == 0:
             continue
         client, project, tags = parse_project_segments(record.project_name)
+        description, desc_tags = split_description_tags(record.task_name)
+        tags.extend(t for t in desc_tags if t not in tags)
         entries.append(
             ReportEntry(
                 client=client,
                 project=project,
-                description=record.task_name,
+                description=description,
                 seconds=seconds,
                 tags=tags,
             )
@@ -2039,7 +2163,7 @@ def format_report(entries: list[ReportEntry]) -> str:
     if label_seconds:
         lines.append("\nLabels")
         for tag in sorted(label_seconds, key=lambda t: label_seconds[t], reverse=True):
-            lines.append(f"  {tag}  {format_duration(label_seconds[tag])}")
+            lines.append(f"  {format_tag_pill(tag)}  {format_duration(label_seconds[tag])}")
 
     return "\n".join(lines)
 
@@ -2372,13 +2496,12 @@ def time_start(
 
             # Get project name (manual mapping → hierarchy inference)
             project_name, client_name = resolve_project_info(todoist_task.project_id, api)
-            bartib_project = build_bartib_project(
-                project_name, client_name, tags=todoist_task.labels
-            )
+            bartib_project = build_bartib_project(project_name, client_name)
 
             # Use task content as description if not provided
             if not note:
                 note = todoist_task.content
+            note = append_tags_to_description(note, todoist_task.labels)
 
             # Start bartib tracking
             bartib.start_tracking(description=note, project=bartib_project)
@@ -2387,7 +2510,7 @@ def time_start(
             db.create_tracking_record(
                 todoist_task_id=task,
                 project_name=bartib_project,
-                task_name=todoist_task.content,
+                task_name=note,
                 started_at=datetime.now(),
             )
 
@@ -3062,7 +3185,7 @@ def meeting_define(
         tags=tag_list,
     )
 
-    bartib_project = build_bartib_project(project or "meetings", client, tag_list)
+    bartib_project = build_bartib_project(project or "meetings", client)
     typer.echo(f"✅ Defined meeting '{alias}'")
     typer.echo(f"   Description: {description}")
     typer.echo(f"   Bartib project: {bartib_project}")
@@ -3083,14 +3206,12 @@ def meeting_list():
     typer.echo("=" * 60)
 
     for alias, m in meetings.items():
-        bartib_project = build_bartib_project(
-            m.get("project") or "meetings", m.get("client", ""), m.get("tags", [])
-        )
+        bartib_project = build_bartib_project(m.get("project") or "meetings", m.get("client", ""))
         typer.echo(f"\n  {alias}")
         typer.echo(f"    Description : {m['description']}")
         typer.echo(f"    Bartib      : {bartib_project}")
         if m.get("tags"):
-            typer.echo(f"    Tags        : {', '.join(m['tags'])}")
+            typer.echo(f"    Tags        : {format_tag_pills(m['tags'])}")
 
     typer.echo()
 
@@ -3132,7 +3253,8 @@ def meeting_start(
         tag_list = [t.strip() for t in tag_str.split(",") if t.strip()] if tag_str else []
         if "meeting" not in tag_list:
             tag_list.append("meeting")
-        bartib_project = build_bartib_project(resolved_project, resolved_client, tag_list)
+        bartib_project = build_bartib_project(resolved_project, resolved_client)
+        description = append_tags_to_description(description, tag_list)
 
         # Stop any active tracking first
         active = db.get_active_tracking()

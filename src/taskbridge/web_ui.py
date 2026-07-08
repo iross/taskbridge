@@ -93,6 +93,10 @@ HTML = """<!DOCTYPE html>
     .current-project { font-size: 0.95rem; font-weight: 600; color: var(--accent); }
     .current-desc { color: var(--text); margin: 3px 0; font-size: 0.9rem; }
     .current-meta { font-size: 0.8rem; color: var(--muted); }
+    .current-start-link { cursor: pointer; border-bottom: 1px dashed var(--muted); }
+    .current-start-link:hover { color: var(--text); border-color: var(--text); }
+    .current-start-input { width: auto; font-size: 0.8rem; padding: 2px 6px; display: inline; }
+    .btn-xs { padding: 2px 7px; font-size: 0.75rem; margin-left: 4px; }
     .idle { color: var(--muted); font-style: italic; font-size: 0.9rem; }
     .btn {
       padding: 7px 15px;
@@ -175,6 +179,12 @@ HTML = """<!DOCTYPE html>
     .act-dur { color: var(--muted); font-size: 0.78rem; }
     .act-project { color: var(--accent); font-size: 0.78rem; margin-bottom: 1px; }
     .act-desc { color: var(--text); }
+    .tag-chip {
+      display: inline-block; padding: 0 7px; border-radius: 9px;
+      font-size: 0.7rem; line-height: 1.5; color: var(--muted);
+      border: 1px solid var(--border); background: var(--active-bg); vertical-align: 1px;
+    }
+    .act-desc .tag-chip, .current-desc .tag-chip { margin-left: 6px; }
     .activity.running .act-time { color: var(--accent); }
     .activity.running .act-dur { color: var(--accent); }
     .edit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
@@ -603,6 +613,7 @@ HTML = """<!DOCTYPE html>
   var elapsedTimer = null;
   var isMeeting = false;
   var meetingPanelOpen = false;
+  var currentTracking = null;
   var activityData = {};
   var editModalKey = null;
   var allActivities = [];
@@ -761,6 +772,7 @@ HTML = """<!DOCTYPE html>
       return;
     }
     card.classList.add('active');
+    currentTracking = cur;
     startedAt = new Date(cur.started_at).getTime();
     elapsedTimer = setInterval(updateElapsed, 1000);
     var elapsed = Math.floor((Date.now() - startedAt) / 1000);
@@ -770,13 +782,21 @@ HTML = """<!DOCTYPE html>
     } else if (cur.has_todoist_task) {
       noteBtn = '<button class="btn btn-note" id="btn-note-create" onclick="createNote(this)">&#128196; Note</button>';
     }
+    var cpd = parseTags(cur.description);
     content.innerHTML =
       '<div class="current-row">' +
         '<div>' +
           '<div class="current-project">' + esc(cur.project) + '</div>' +
-          '<div class="current-desc">' + esc(cur.description) + '</div>' +
-          '<div class="current-meta">Started ' + fmtTime(cur.started_at) +
-            ' &nbsp;&middot;&nbsp; <span id="elapsed">' + fmtDur(elapsed) + '</span></div>' +
+          '<div class="current-desc">' + esc(cpd.text) + tagChips(cpd.tags) + '</div>' +
+          '<div class="current-meta">' +
+            'Started <span id="current-start-display" class="current-start-link" onclick="editCurrentStart()">' + fmtTime(cur.started_at) + '</span>' +
+            '<span id="current-start-edit" style="display:none">' +
+              '<input type="time" id="current-start-input" class="current-start-input">' +
+              '<button class="btn btn-save btn-xs" onclick="saveCurrentStart()">&#10003;</button>' +
+              '<button class="btn btn-cancel btn-xs" onclick="cancelCurrentStart()">&#215;</button>' +
+            '</span>' +
+            ' &nbsp;&middot;&nbsp; <span id="elapsed">' + fmtDur(elapsed) + '</span>' +
+          '</div>' +
         '</div>' +
         '<div style="display:flex;gap:8px;align-items:flex-start">' +
           noteBtn +
@@ -786,13 +806,82 @@ HTML = """<!DOCTYPE html>
       '</div>';
   }
 
+  function editCurrentStart() {
+    if (!currentTracking) return;
+    var t = new Date(currentTracking.started_at);
+    document.getElementById('current-start-input').value =
+      String(t.getHours()).padStart(2,'0') + ':' + String(t.getMinutes()).padStart(2,'0');
+    document.getElementById('current-start-display').style.display = 'none';
+    document.getElementById('current-start-edit').style.display = 'inline';
+    document.getElementById('current-start-input').focus();
+  }
+
+  function cancelCurrentStart() {
+    document.getElementById('current-start-display').style.display = '';
+    document.getElementById('current-start-edit').style.display = 'none';
+  }
+
+  function saveCurrentStart() {
+    var newTime = document.getElementById('current-start-input').value;
+    if (!newTime || !currentTracking) return;
+    var orig = new Date(currentTracking.started_at);
+    var parts = newTime.split(':');
+    orig.setHours(parseInt(parts[0]), parseInt(parts[1]), 0, 0);
+    var pad = function(n) { return String(n).padStart(2,'0'); };
+    var newIso = orig.getFullYear() + '-' + pad(orig.getMonth()+1) + '-' + pad(orig.getDate()) +
+      'T' + pad(orig.getHours()) + ':' + pad(orig.getMinutes()) + ':00';
+    var body = { new_started_at: newIso };
+    fetch('/api/current/edit-start', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
+      .then(function(r){ return r.json(); }).then(function(data) {
+        if (data.success) refreshStatus();
+        else { cancelCurrentStart(); alert(data.error || 'Failed to update start time'); }
+      }).catch(function() { cancelCurrentStart(); alert('Network error'); });
+  }
+
   var CLIENT_PALETTE = ['#4fc3f7','#81c784','#ffb74d','#f06292','#ba68c8','#4db6ac','#ff8a65','#a1887f','#90a4ae','#e6ee9c'];
+  var tagColors = {};
 
   function clientColor(project) {
     var client = project.indexOf('::') >= 0 ? project.split('::')[0] : project;
     var h = 0;
     for (var i = 0; i < client.length; i++) h = (h * 31 + client.charCodeAt(i)) & 0xffff;
     return CLIENT_PALETTE[h % CLIENT_PALETTE.length];
+  }
+
+  function parseTags(desc) {
+    var tags = [], words = [];
+    var parts = (desc || '').split(/\\s+/);
+    for (var i = 0; i < parts.length; i++) {
+      var w = parts[i];
+      if (w.length > 1 && w.charAt(0) === '#') {
+        var t = w.slice(1);
+        if (tags.indexOf(t) < 0) tags.push(t);
+      } else if (w) {
+        words.push(w);
+      }
+    }
+    return {text: words.join(' '), tags: tags};
+  }
+
+  function tagColor(tag) {
+    var override = tagColors[tag.toLowerCase()];
+    if (override && /^#[0-9a-fA-F]{6}$/.test(override)) return override;
+    var h = 0;
+    for (var i = 0; i < tag.length; i++) h = (h * 31 + tag.charCodeAt(i)) & 0xffff;
+    return CLIENT_PALETTE[h % CLIENT_PALETTE.length];
+  }
+
+  function tagChips(tags) {
+    var html = '';
+    for (var i = 0; i < tags.length; i++) {
+      var c = tagColor(tags[i]);
+      html += '<span class="tag-chip" style="' +
+        'background:color-mix(in srgb, ' + c + ' 16%, transparent);' +
+        'border-color:color-mix(in srgb, ' + c + ' 50%, transparent);' +
+        'color:color-mix(in srgb, ' + c + ' 60%, var(--text))">' +
+        esc(tags[i]) + '</span>';
+    }
+    return html;
   }
 
   function renderActivities(acts) {
@@ -824,13 +913,13 @@ HTML = """<!DOCTYPE html>
         var a = g.items[j];
         var endT = a.stopped_at ? fmtTime(a.stopped_at) : '···';
         var durS = a.duration_seconds ? fmtDur(a.duration_seconds) : '···';
-        var aKey = JSON.stringify(a.started_at);
+        var pd = parseTags(a.description);
         html += '<div class="activity-wrap" style="border-left-color:' + clientColor(a.project) + '">' +
-          '<div class="activity' + (a.active ? ' running' : '') + '" onclick="openEditModal(' + aKey + ')">' +
+          '<div class="activity' + (a.active ? ' running' : '') + '" onclick="openEditModal(&#39;' + a.started_at + '&#39;)">' +
             '<span class="act-time">' + fmtTime(a.started_at) + '–' + endT + '</span>' +
             '<span class="act-dur">' + durS + '</span>' +
             '<div><div class="act-project">' + esc(a.project) + '</div>' +
-            '<div class="act-desc">' + esc(a.description) + '</div></div>' +
+            '<div class="act-desc">' + esc(pd.text) + tagChips(pd.tags) + '</div></div>' +
           '</div>' +
           '</div>';
         if (j + 1 < g.items.length) {
@@ -870,16 +959,17 @@ HTML = """<!DOCTYPE html>
       var client = segs[0] || a.project;
       var proj = segs.length > 1 ? segs[1] : '—';
       var secs = a.duration_seconds || 0;
+      var pd = parseTags(a.description);
       totalSecs += secs;
       if (!clients[client]) { clients[client] = {total: 0, projects: {}, projOrder: []}; clientOrder.push(client); }
       clients[client].total += secs;
       if (!clients[client].projects[proj]) { clients[client].projects[proj] = {total: 0, descs: []}; clients[client].projOrder.push(proj); }
       clients[client].projects[proj].total += secs;
-      if (a.description && clients[client].projects[proj].descs.indexOf(a.description) < 0) {
-        clients[client].projects[proj].descs.push(a.description);
+      if (pd.text && clients[client].projects[proj].descs.indexOf(pd.text) < 0) {
+        clients[client].projects[proj].descs.push(pd.text);
       }
-      for (var li = 2; li < segs.length; li++) {
-        var lbl = segs[li];
+      for (var li = 0; li < pd.tags.length; li++) {
+        var lbl = pd.tags[li];
         if (!labels[lbl]) { labels[lbl] = 0; labelOrder.push(lbl); }
         labels[lbl] += secs;
       }
@@ -904,7 +994,7 @@ HTML = """<!DOCTYPE html>
       html += '<hr class="report-sep">';
       for (var li = 0; li < labelOrder.length; li++) {
         var lbl = labelOrder[li];
-        html += '<div class="report-label-row"><span>' + esc(lbl) + '</span>' +
+        html += '<div class="report-label-row"><span>' + tagChips([lbl]) + '</span>' +
           '<span class="report-proj-dur">' + fmtDur(labels[lbl]) + '</span></div>';
       }
     }
@@ -935,6 +1025,7 @@ HTML = """<!DOCTYPE html>
     dot.style.opacity = '0.3';
     var editOpen = document.getElementById('edit-modal').classList.contains('open');
     fetch('/api/status').then(function(r){ return r.json(); }).then(function(data) {
+      tagColors = data.tag_colors || {};
       renderCurrent(data.current);
       renderReport(data.activities);
       if (!editOpen) renderActivities(data.activities);
@@ -1636,12 +1727,10 @@ def _sanitize_name(name: str) -> str:
     return cleaned if cleaned else "general"
 
 
-def _build_bartib_project(project: str, client: str = "", tags: list[str] | None = None) -> str:
+def _build_bartib_project(project: str, client: str = "") -> str:
     parts = (
         [_sanitize_name(client), _sanitize_name(project)] if client else [_sanitize_name(project)]
     )
-    if tags:
-        parts.append(",".join(_sanitize_name(t) for t in tags))
     return "::".join(parts)
 
 
@@ -1783,6 +1872,8 @@ class TimeWebHandler(BaseHTTPRequestHandler):
             self._handle_task_create(body)
         elif path == "/api/activity/edit":
             self._handle_activity_edit(body)
+        elif path == "/api/current/edit-start":
+            self._handle_current_edit_start(body)
         elif path == "/api/activity/delete":
             self._handle_activity_delete(body)
         elif path == "/api/activity/resume":
@@ -1841,7 +1932,15 @@ class TimeWebHandler(BaseHTTPRequestHandler):
                 "has_todoist_task": has_todoist_task,
                 "note_url": note_url,
             }
-        self._send_json({"current": current, "activities": activities})
+        from .config import config as config_manager
+
+        self._send_json(
+            {
+                "current": current,
+                "activities": activities,
+                "tag_colors": config_manager.get_tag_colors(),
+            }
+        )
 
     def _handle_projects(self):
         self._send_json(
@@ -1890,7 +1989,7 @@ class TimeWebHandler(BaseHTTPRequestHandler):
                         project_name, client_name = resolve_project_info(project_id, api)
                     else:
                         raise ValueError("no project")
-                    bartib_project = _build_bartib_project(project_name, client_name, task_labels)
+                    bartib_project = _build_bartib_project(project_name, client_name)
                 except Exception:
                     bartib_project = project_raw or "taskbridge"
             elif project_id:
@@ -1905,8 +2004,11 @@ class TimeWebHandler(BaseHTTPRequestHandler):
             else:
                 bartib_project = project_raw or ("meetings" if is_meeting else "taskbridge")
 
-            if is_meeting:
-                bartib_project = f"{bartib_project}::meeting"
+            from .main import append_tags_to_description
+
+            if is_meeting and "meeting" not in task_labels:
+                task_labels.append("meeting")
+            description = append_tags_to_description(description, task_labels)
 
             time_from = body.get("time_from", "").strip()  # HH:MM or ""
             time_to = body.get("time_to", "").strip()  # HH:MM or ""
@@ -1965,6 +2067,31 @@ class TimeWebHandler(BaseHTTPRequestHandler):
             return
         try:
             _stop_active(active)
+            self._send_json({"success": True})
+        except Exception as e:
+            self._send_json({"success": False, "error": str(e)}, 500)
+
+    def _handle_current_edit_start(self, body: dict):
+        new_start = body.get("new_started_at", "").strip()
+        if not new_start:
+            self._send_json({"success": False, "error": "new_started_at required"}, 400)
+            return
+        active = db.get_active_tracking()
+        if not active or not active.started_at:
+            self._send_json({"success": False, "error": "No active tracking"})
+            return
+        try:
+            new_dt = datetime.fromisoformat(new_start)
+            # Try to update the bartib file; ignore if the entry isn't there
+            # (can happen when the task was started outside the web UI or via CLI stop).
+            _edit_bartib_line(
+                active.started_at.isoformat(),
+                new_start,
+                "",
+                active.project_name,
+                active.task_name,
+            )
+            db.update_tracking_started_at(active, new_dt)
             self._send_json({"success": True})
         except Exception as e:
             self._send_json({"success": False, "error": str(e)}, 500)
@@ -2169,7 +2296,11 @@ class TimeWebHandler(BaseHTTPRequestHandler):
             tags = list(definition.get("tags", []))
             if "meeting" not in tags:
                 tags.append("meeting")
-            bartib_project = _build_bartib_project(project, client, tags)
+            bartib_project = _build_bartib_project(project, client)
+
+            from .main import append_tags_to_description
+
+            description = append_tags_to_description(description, tags)
 
             active = db.get_active_tracking()
             if active:

@@ -3,6 +3,7 @@
 from datetime import datetime
 
 import pytest
+import typer
 
 from taskbridge.database import Database, TaskTimeTracking
 
@@ -136,6 +137,37 @@ class TestBuildReportEntries:
         assert entries[0].client == "(other)"
         assert entries[0].project == "meetings"
 
+    def test_description_tags_extracted(self):
+        from taskbridge.main import build_report_entries
+
+        records = [
+            self._record(
+                "CHTC::NAIRR",
+                "Standup #meeting #team",
+                datetime(2026, 2, 25, 9, 0),
+                datetime(2026, 2, 25, 9, 30),
+            )
+        ]
+        entries = build_report_entries(records, now=datetime(2026, 2, 25, 10, 0))
+
+        assert entries[0].description == "Standup"
+        assert entries[0].tags == ["meeting", "team"]
+
+    def test_legacy_segment_and_description_tags_merge(self):
+        from taskbridge.main import build_report_entries
+
+        records = [
+            self._record(
+                "CHTC::NAIRR::meeting",
+                "Standup #meeting #team",
+                datetime(2026, 2, 25, 9, 0),
+                datetime(2026, 2, 25, 9, 30),
+            )
+        ]
+        entries = build_report_entries(records, now=datetime(2026, 2, 25, 10, 0))
+
+        assert entries[0].tags == ["meeting", "team"]
+
 
 # ============================================================================
 # format_report
@@ -220,7 +252,8 @@ class TestFormatReport:
         output = format_report(entries)
 
         assert "Labels" in output
-        assert "meeting  30m" in output
+        assert " meeting " in typer.unstyle(output)
+        assert "30m" in output
 
     def test_label_breakdown_omitted_when_no_tags(self):
         from taskbridge.main import format_report
@@ -240,7 +273,7 @@ class TestFormatReport:
         ]
         output = format_report(entries)
 
-        assert "meeting  2h 0m" in output
+        assert "2h 0m" in typer.unstyle(output).split(" meeting ")[-1]
 
 
 # ============================================================================

@@ -530,6 +530,21 @@ class Database:
             conn.commit()
             return cursor.rowcount > 0
 
+    def update_tracking_started_at(
+        self, tracking: TaskTimeTracking, new_started_at: datetime
+    ) -> bool:
+        """Update the start time of an active tracking record."""
+        if not tracking.id:
+            return False
+        sql = (
+            "UPDATE task_time_tracking "
+            "SET started_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+        )
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(sql, (new_started_at.isoformat(), tracking.id))
+            conn.commit()
+            return cursor.rowcount > 0
+
     # ============================================================================
     # Jira Sync Methods
     # ============================================================================
