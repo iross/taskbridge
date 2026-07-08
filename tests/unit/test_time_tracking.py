@@ -1,11 +1,13 @@
 """Tests for time tracking database operations and helper functions."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import patch
 
 import pytest
+from typer.testing import CliRunner
 
 from taskbridge.database import Database, TaskTimeTracking
+from taskbridge.main import app
 
 
 @pytest.fixture
@@ -486,3 +488,50 @@ class TestStopTrackingInternal:
 
         assert success is False
         assert duration == 0
+
+
+class TestTimeCurrent:
+    """Test the `time current` CLI command."""
+
+    @pytest.fixture
+    def runner(self):
+        return CliRunner()
+
+    def test_current_shows_active_session(self, runner):
+        """Active session prints task, project, and elapsed time on one line."""
+        active = TaskTimeTracking(
+            id=1,
+            todoist_task_id="task-123",
+            project_name="client::proj",
+            task_name="Fix the widget",
+            started_at=datetime.now() - timedelta(minutes=90),
+        )
+
+        with patch("taskbridge.main.db.get_active_tracking", return_value=active):
+            result = runner.invoke(app, ["time", "current"])
+
+        assert result.exit_code == 0
+        assert "Fix the widget" in result.stdout
+        assert "client::proj" in result.stdout
+        assert "1h 30m" in result.stdout
+        assert len(result.stdout.strip().splitlines()) == 1
+
+    def test_current_idle_exits_nonzero_with_empty_stdout(self, runner):
+        """No active session: nothing on stdout, exit code 1."""
+        with patch("taskbridge.main.db.get_active_tracking", return_value=None):
+            result = runner.invoke(app, ["time", "current"])
+
+        assert result.exit_code == 1
+        assert result.stdout.strip() == ""
+
+    def test_current_missing_started_at_treated_as_idle(self, runner):
+        """A record without started_at cannot report elapsed time; treat as idle."""
+        active = TaskTimeTracking(
+            id=1, todoist_task_id="task-123", project_name="proj", task_name="Task"
+        )
+
+        with patch("taskbridge.main.db.get_active_tracking", return_value=active):
+            result = runner.invoke(app, ["time", "current"])
+
+        assert result.exit_code == 1
+        assert result.stdout.strip() == ""

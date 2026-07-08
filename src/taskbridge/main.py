@@ -2565,6 +2565,24 @@ def time_stop():
         raise typer.Exit(1) from None
 
 
+@time_app.command("current")
+def time_current():
+    """Show the active tracking session as a single line (for shell prompts).
+
+    Prints "task · project · elapsed" and exits 0 when tracking is active.
+    Prints nothing to stdout and exits 1 when idle, so prompt integrations
+    (e.g. starship custom modules) can hide the segment.
+    """
+    active = db.get_active_tracking()
+
+    if not active or not active.started_at:
+        typer.echo("No active tracking session", err=True)
+        raise typer.Exit(1)
+
+    elapsed = max(0, int((datetime.now() - active.started_at).total_seconds()))
+    typer.echo(f"▶ {active.task_name} · {active.project_name} · {format_duration(elapsed)}")
+
+
 @time_app.command("list")
 def time_list(
     project: str | None = typer.Option(None, "--project", "-p", help="Filter by project"),
