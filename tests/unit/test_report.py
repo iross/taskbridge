@@ -195,41 +195,56 @@ class TestFormatReport:
         from taskbridge.main import format_report
 
         entries = [self._entry("CHTC", "NAIRR", "Write-up", 3600)]
-        output = format_report(entries)
+        output = typer.unstyle(format_report(entries))
 
-        assert "Total: 1.0h" in output
+        assert "Total" in output
+        assert "1h 0m" in output.split("Total")[-1]
 
-    def test_client_fraction(self):
+    def test_client_totals_dotted(self):
         from taskbridge.main import format_report
 
         entries = [
             self._entry("CHTC", "NAIRR", "Write-up", 3600),
             self._entry("PATh", "outreach", "Email", 3600),
         ]
-        output = format_report(entries)
+        output = typer.unstyle(format_report(entries))
 
-        assert "CHTC  0.50" in output
-        assert "PATh  0.50" in output
+        assert "CHTC" in output and "1h 0m" in output
+        assert "PATh" in output
 
-    def test_project_fraction_of_client(self):
+    def test_project_totals_dotted(self):
         from taskbridge.main import format_report
 
         entries = [
             self._entry("CHTC", "NAIRR", "Write-up", 2700),  # 45m
             self._entry("CHTC", "Standup", "Standup", 900),  # 15m
         ]
-        output = format_report(entries)
+        output = typer.unstyle(format_report(entries))
 
-        assert "NAIRR: 0.75" in output
-        assert "Standup: 0.25" in output
+        assert "NAIRR" in output and "45m" in output
+        assert "Standup" in output and "15m" in output
 
-    def test_descriptions_listed(self):
+    def test_descriptions_listed_with_duration(self):
         from taskbridge.main import format_report
 
         entries = [self._entry("CHTC", "NAIRR", "Write-up", 3600)]
+        output = typer.unstyle(format_report(entries))
+
+        assert "Write-up" in output
+        # description line has its own dotted duration, distinct from the client/project rows
+        desc_line = next(
+            line for line in output.splitlines() if line.strip().startswith("Write-up")
+        )
+        assert "1h 0m" in desc_line
+
+    def test_descriptions_show_tags_inline(self):
+        from taskbridge.main import format_report
+
+        entries = [self._entry("CHTC", "NAIRR", "Standup", 1800, tags=["meeting"])]
         output = format_report(entries)
 
-        assert "    - Write-up" in output
+        desc_line = next(line for line in output.splitlines() if "Standup" in typer.unstyle(line))
+        assert " meeting " in typer.unstyle(desc_line)
 
     def test_clients_sorted_by_time_descending(self):
         from taskbridge.main import format_report
