@@ -2121,8 +2121,25 @@ def build_report_entries(records: list[TaskTimeTracking], now: datetime) -> list
     return entries
 
 
+REPORT_WIDTH = 100
+REPORT_DURATION_FIELD = 10
+
+
+def _visible_len(text: str) -> int:
+    """Return the display width of a string, ignoring ANSI escape sequences."""
+    return len(re.sub(r"\x1b\[[0-9;]*m", "", text))
+
+
+def _dotted_row(label: str, duration: str, *, bold: bool = False) -> str:
+    """Render a bartib-style row: label, dot leaders, right-aligned duration."""
+    label_area = REPORT_WIDTH - REPORT_DURATION_FIELD
+    dots = "." * max(1, label_area - _visible_len(label))
+    row = f"{label}{dots}{duration.rjust(REPORT_DURATION_FIELD)}"
+    return typer.style(row, bold=True) if bold else row
+
+
 def format_report(entries: list[ReportEntry]) -> str:
-    """Format report entries into a hierarchical text report."""
+    """Format report entries into a bartib-style dotted, hierarchical text report."""
     if not entries:
         return "No tracked time found for this period."
 
@@ -2132,38 +2149,48 @@ def format_report(entries: list[ReportEntry]) -> str:
 
     client_seconds: dict[str, int] = defaultdict(int)
     project_seconds: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
-    project_descriptions: dict[str, dict[str, list[str]]] = defaultdict(lambda: defaultdict(list))
+    desc_seconds: dict[str, dict[str, dict[str, int]]] = defaultdict(
+        lambda: defaultdict(lambda: defaultdict(int))
+    )
+    desc_tags: dict[str, dict[str, dict[str, list[str]]]] = defaultdict(
+        lambda: defaultdict(lambda: defaultdict(list))
+    )
     label_seconds: dict[str, int] = defaultdict(int)
 
     for entry in entries:
         client_seconds[entry.client] += entry.seconds
         project_seconds[entry.client][entry.project] += entry.seconds
-        if entry.description not in project_descriptions[entry.client][entry.project]:
-            project_descriptions[entry.client][entry.project].append(entry.description)
+        desc_seconds[entry.client][entry.project][entry.description] += entry.seconds
+        entry_tags = desc_tags[entry.client][entry.project][entry.description]
         for tag in entry.tags:
+            if tag not in entry_tags:
+                entry_tags.append(tag)
             label_seconds[tag] += entry.seconds
 
-    total_hours = total_seconds / 3600
-    lines = [f"Total: {total_hours:.1f}h\n"]
-
+    lines = []
     for client in sorted(client_seconds, key=lambda c: client_seconds[c], reverse=True):
-        c_secs = client_seconds[client]
-        c_frac = c_secs / total_seconds
-        lines.append(f"{client}  {c_frac:.2f}")
+        lines.append(_dotted_row(client, format_duration(client_seconds[client]), bold=True))
 
-        for project in sorted(
-            project_seconds[client], key=lambda p: project_seconds[client][p], reverse=True
-        ):
-            p_secs = project_seconds[client][project]
-            p_frac = p_secs / c_secs
-            lines.append(f"  - {project}: {p_frac:.2f}")
-            for desc in project_descriptions[client][project]:
-                lines.append(f"    - {desc}")
+        projects = project_seconds[client]
+        for project in sorted(projects, key=lambda p: projects[p], reverse=True):
+            lines.append(_dotted_row(f"  {project}", format_duration(projects[project]), bold=True))
+            descs = desc_seconds[client][project]
+            for desc in sorted(descs, key=lambda d: descs[d], reverse=True):
+                tags = desc_tags[client][project][desc]
+                label = f"    {desc}"
+                if tags:
+                    label = f"{label}  {format_tag_pills(tags)}"
+                lines.append(_dotted_row(label, format_duration(descs[desc])))
+        lines.append("")
 
     if label_seconds:
-        lines.append("\nLabels")
+        lines.append("Labels")
         for tag in sorted(label_seconds, key=lambda t: label_seconds[t], reverse=True):
-            lines.append(f"  {format_tag_pill(tag)}  {format_duration(label_seconds[tag])}")
+            duration = format_duration(label_seconds[tag])
+            lines.append(_dotted_row(f"  {format_tag_pill(tag)}", duration))
+        lines.append("")
+
+    lines.append(_dotted_row("Total", format_duration(total_seconds), bold=True))
 
     return "\n".join(lines)
 
