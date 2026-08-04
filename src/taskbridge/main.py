@@ -471,6 +471,33 @@ def task_list(
         raise typer.Exit(1) from None
 
 
+@task_app.command("labels")
+def task_labels():
+    """List all Todoist labels."""
+    if not config_manager.get_todoist_token():
+        typer.echo("❌ Todoist not configured. Run 'taskbridge config todoist' first.")
+        raise typer.Exit(1) from None
+
+    try:
+        api = TodoistAPI()
+        labels = api.get_labels()
+
+        if not labels:
+            typer.echo("No labels found.")
+            return
+
+        labels.sort(key=lambda label: label.name.lower())
+
+        typer.echo(f"Found {len(labels)} label(s):")
+        for label in labels:
+            star = " ⭐" if label.is_favorite else ""
+            typer.echo(f"  {format_tag_pill(label.name)}{star}")
+
+    except Exception as e:
+        typer.echo(f"❌ Error: {e}")
+        raise typer.Exit(1) from None
+
+
 @task_app.command("show")
 def task_show(task_id: str):
     """Show task details and mapping information."""
