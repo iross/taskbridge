@@ -2068,15 +2068,24 @@ def format_duration(seconds: int) -> str:
     return f"{minutes}m"
 
 
-def parse_project_segments(project_name: str) -> tuple[str, str, list[str]]:
+def parse_project_segments(
+    project_name: str, known_clients: set[str] | None = None
+) -> tuple[str, str, list[str]]:
     """Split a bartib project string into (client, project, tags).
 
     Format: "client::project::tag1,tag2"
-    Projects with no '::' separator are returned as ('(other)', project_name, []).
+    A bare project name with no '::' separator is ambiguous: it could be a flat,
+    client-less bucket (e.g. "Inbox", "meetings") or a dropped "::project" suffix
+    on an otherwise-known client. If it resolves to a name in known_clients, it is
+    treated as the latter: ('client', '(other)', []). Otherwise it is treated as a
+    flat bucket: ('(other)', project_name, []).
     Client names are normalized via configured aliases (case-insensitive).
     """
     parts = project_name.split("::")
     if len(parts) == 1:
+        token = config_manager.resolve_client_name(parts[0])
+        if known_clients and token in known_clients:
+            return token, "(other)", []
         return "(other)", parts[0], []
     tags = [t for t in parts[2].split(",") if t] if len(parts) >= 3 else []
     client = config_manager.resolve_client_name(parts[0])
@@ -2097,6 +2106,9 @@ class ReportEntry:
 
 def build_report_entries(records: list[TaskTimeTracking], now: datetime) -> list[ReportEntry]:
     """Convert tracking records into flat report entries, crediting active sessions to now."""
+    known_clients = {
+        parse_project_segments(r.project_name)[0] for r in records if "::" in r.project_name
+    }
     entries = []
     for record in records:
         start = record.started_at
@@ -2106,7 +2118,7 @@ def build_report_entries(records: list[TaskTimeTracking], now: datetime) -> list
         seconds = max(0, int((end - start).total_seconds()))
         if seconds == 0:
             continue
-        client, project, tags = parse_project_segments(record.project_name)
+        client, project, tags = parse_project_segments(record.project_name, known_clients)
         description, desc_tags = split_description_tags(record.task_name)
         tags.extend(t for t in desc_tags if t not in tags)
         entries.append(
