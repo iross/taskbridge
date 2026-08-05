@@ -2681,6 +2681,31 @@ def time_list(
         raise typer.Exit(1) from None
 
 
+@time_app.command("tags")
+def time_tags():
+    """List all tags used across time-tracked entries, with total tracked time."""
+    try:
+        records = parse_bartib_file(datetime.min, datetime.max)
+    except RuntimeError as e:
+        typer.echo(f"❌ {e}")
+        raise typer.Exit(1) from None
+
+    entries = build_report_entries(records, now=datetime.now())
+
+    tag_seconds: dict[str, int] = {}
+    for entry in entries:
+        for tag in entry.tags:
+            tag_seconds[tag] = tag_seconds.get(tag, 0) + entry.seconds
+
+    if not tag_seconds:
+        typer.echo("No tags found.")
+        return
+
+    typer.echo(f"Found {len(tag_seconds)} tag(s):")
+    for tag in sorted(tag_seconds, key=str.lower):
+        typer.echo(f"  {format_tag_pill(tag)}  {format_duration(tag_seconds[tag])}")
+
+
 @time_app.command("report")
 def time_report(
     date: str | None = typer.Option(None, "--date", help="Report for a specific date (YYYY-MM-DD)"),
