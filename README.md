@@ -50,7 +50,10 @@ Usage:
 ```bash
 taskbridge inbox report                 # uses default_profile
 taskbridge inbox report --profile work  # preview another profile without editing config
+taskbridge inbox open <index>           # launch the item's native URI (obsidian://, todoist showTask link, ...)
 ```
+
+`inbox open` shells out to the macOS `open` command, so it only works on a Mac.
 
 ## Development
 

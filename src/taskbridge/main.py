@@ -374,6 +374,32 @@ def inbox_report(
         typer.echo(f"{i}. [{item.label}] {item.description} ({item.age_days:.1f}d)")
 
 
+@inbox_app.command("open")
+def inbox_open(
+    index: int = typer.Argument(..., help="1-based index from `inbox report`"),
+    profile: str | None = typer.Option(
+        None, "--profile", help="Preview a specific profile instead of the machine default"
+    ),
+):
+    """Launch a specific inbox report item in its native app."""
+    items = inbox.scan_all(config_manager, profile)
+    if not items:
+        typer.echo("❌ No inbox items currently reported.")
+        raise typer.Exit(1) from None
+
+    if index < 1 or index > len(items):
+        typer.echo(f"❌ Index {index} out of range (1-{len(items)}).")
+        raise typer.Exit(1) from None
+
+    item = items[index - 1]
+    try:
+        subprocess.run(["open", item.uri], check=True)
+        typer.echo(f"Opened: {item.description}")
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        typer.echo(f"❌ Failed to open item: {e}")
+        raise typer.Exit(1) from None
+
+
 # ============================================================================
 # TASK COMMANDS
 # ============================================================================

@@ -289,3 +289,73 @@ class TestInboxReportCommand:
 
             cfg.is_module_enabled.assert_any_call("obsidian_inbox", profile="work")
             cfg.is_module_enabled.assert_any_call("todoist_inbox", profile="work")
+
+
+class TestInboxOpenCommand:
+    """CLI tests for `taskbridge inbox open`."""
+
+    @pytest.fixture
+    def runner(self):
+        return CliRunner()
+
+    def _report_config(self, cfg, tmp_path, items_count=1):
+        """Configure a mock so scan_all() returns items_count Obsidian items."""
+        inbox_dir = tmp_path / "00 Inbox"
+        inbox_dir.mkdir(exist_ok=True)
+        for i in range(items_count):
+            touch_with_age(inbox_dir / f"Note{i}.md", age_days=i + 1)
+
+        cfg.is_module_enabled.side_effect = lambda name, profile=None: name == "obsidian_inbox"
+        cfg.get_inbox_folders.return_value = [{"label": "inbox", "path": "00 Inbox"}]
+        cfg.get_obsidian_vault_path.return_value = str(tmp_path)
+        cfg.generate_obsidian_file_url.side_effect = lambda rel_path: (
+            f"obsidian://open?vault=v&file={rel_path}"
+        )
+
+    def test_no_items_reports_clear_error(self, runner):
+        with patch("taskbridge.main.config_manager") as cfg:
+            cfg.is_module_enabled.return_value = False
+            result = runner.invoke(app, ["inbox", "open", "1"])
+
+        assert result.exit_code == 1
+        assert "No inbox items currently reported" in result.stdout
+
+    def test_index_out_of_range_reports_clear_error(self, runner, tmp_path):
+        with patch("taskbridge.main.config_manager") as cfg:
+            self._report_config(cfg, tmp_path, items_count=1)
+            result = runner.invoke(app, ["inbox", "open", "5"])
+
+        assert result.exit_code == 1
+        assert "out of range" in result.stdout
+
+    def test_zero_index_reports_clear_error(self, runner, tmp_path):
+        with patch("taskbridge.main.config_manager") as cfg:
+            self._report_config(cfg, tmp_path, items_count=1)
+            result = runner.invoke(app, ["inbox", "open", "0"])
+
+        assert result.exit_code == 1
+        assert "out of range" in result.stdout
+
+    @patch("taskbridge.main.subprocess.run")
+    def test_valid_index_launches_uri_via_open(self, mock_run, runner, tmp_path):
+        with patch("taskbridge.main.config_manager") as cfg:
+            self._report_config(cfg, tmp_path, items_count=2)
+            result = runner.invoke(app, ["inbox", "open", "1"])
+
+        assert result.exit_code == 0
+        mock_run.assert_called_once_with(
+            ["open", "obsidian://open?vault=v&file=00 Inbox/Note0.md"], check=True
+        )
+
+    @patch("taskbridge.main.subprocess.run")
+    def test_shell_out_failure_reports_clear_error(self, mock_run, runner, tmp_path):
+        import subprocess
+
+        mock_run.side_effect = subprocess.CalledProcessError(1, ["open"])
+
+        with patch("taskbridge.main.config_manager") as cfg:
+            self._report_config(cfg, tmp_path, items_count=1)
+            result = runner.invoke(app, ["inbox", "open", "1"])
+
+        assert result.exit_code == 1
+        assert "Failed to open item" in result.stdout
