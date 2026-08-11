@@ -7,6 +7,9 @@ from pathlib import Path
 from .config import Config
 from .config import config as default_config
 
+# Module names gated by profile (ADR-003). Extended as adapters land.
+INBOX_MODULES = ("obsidian_inbox",)
+
 
 @dataclass
 class InboxItem:
@@ -55,3 +58,32 @@ def _scan_folder(
         uri = config_manager.generate_obsidian_file_url(file_relative)
         items.append(InboxItem(label=label, path=str(md_file), age_days=age_days, uri=uri))
     return items
+
+
+def enabled_modules(config_manager: Config | None = None, profile: str | None = None) -> list[str]:
+    """List inbox modules enabled for the active profile, in a stable order."""
+    config_manager = config_manager or default_config
+    return [m for m in INBOX_MODULES if config_manager.is_module_enabled(m, profile=profile)]
+
+
+def scan_all(config_manager: Config | None = None, profile: str | None = None) -> list[InboxItem]:
+    """Aggregate items from every scanner enabled for the active profile."""
+    config_manager = config_manager or default_config
+    active_modules = enabled_modules(config_manager, profile)
+
+    items: list[InboxItem] = []
+    if "obsidian_inbox" in active_modules:
+        items.extend(scan_obsidian_folders(config_manager.get_inbox_folders(), config_manager))
+    return items
+
+
+def group_by_label(items: list[InboxItem]) -> list[tuple[str, int, float]]:
+    """Group items by label, returning (label, count, oldest_age_days) sorted by label."""
+    groups: dict[str, list[InboxItem]] = {}
+    for item in items:
+        groups.setdefault(item.label, []).append(item)
+
+    return [
+        (label, len(group), max(i.age_days for i in group))
+        for label, group in sorted(groups.items())
+    ]

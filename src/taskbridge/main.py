@@ -9,6 +9,7 @@ from pathlib import Path
 
 import typer
 
+from . import inbox
 from .bartib_integration import BartibIntegration
 from .config import config as config_manager
 from .database import TaskTimeTracking, TodoistNoteMapping, db
@@ -30,6 +31,7 @@ sync_app = typer.Typer(help="Synchronization commands")
 time_app = typer.Typer(help="Time tracking commands")
 meeting_app = typer.Typer(help="Meeting time tracking commands")
 export_app = typer.Typer(help="Export commands")
+inbox_app = typer.Typer(help="Unified inbox commands")
 
 app.add_typer(config_app, name="config")
 app.add_typer(task_app, name="task")
@@ -39,6 +41,7 @@ app.add_typer(sync_app, name="sync")
 app.add_typer(time_app, name="time")
 app.add_typer(meeting_app, name="meeting")
 app.add_typer(export_app, name="export")
+app.add_typer(inbox_app, name="inbox")
 
 
 # ============================================================================
@@ -338,6 +341,37 @@ def config_tag_color(
 
     config_manager.set_tag_color(tag, color)
     typer.echo(f"✅ {format_tag_pill(tag.lower())} → {color}")
+
+
+# ============================================================================
+# INBOX COMMANDS
+# ============================================================================
+
+
+@inbox_app.command("report")
+def inbox_report(
+    profile: str | None = typer.Option(
+        None, "--profile", help="Preview a specific profile instead of the machine default"
+    ),
+):
+    """Report outstanding items across every inbox source enabled for the active profile."""
+    if not inbox.enabled_modules(config_manager, profile):
+        typer.echo("No inbox sources configured or enabled for this profile.")
+        return
+
+    items = inbox.scan_all(config_manager, profile)
+    if not items:
+        typer.echo("📥 Inbox zero — nothing outstanding.")
+        return
+
+    typer.echo("📥 Inbox Report")
+    typer.echo("=" * 60)
+    for label, count, oldest_age_days in inbox.group_by_label(items):
+        typer.echo(f"{label}: {count} item(s), oldest {oldest_age_days:.1f}d")
+
+    typer.echo()
+    for i, item in enumerate(items, 1):
+        typer.echo(f"{i}. [{item.label}] {item.path} ({item.age_days:.1f}d)")
 
 
 # ============================================================================
