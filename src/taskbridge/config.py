@@ -389,13 +389,21 @@ class Config:
 
     def generate_obsidian_url(self, project_name: str, file_name: str) -> str:
         """Generate Obsidian URL for opening a specific file."""
+        return self.generate_obsidian_file_url(f"10 Projects/{project_name}/{file_name}")
+
+    def generate_obsidian_file_url(self, vault_relative_path: str) -> str:
+        """Generate Obsidian URL for a file given a path relative to the vault root."""
         vault_name = self.get_obsidian_vault_name()
-
-        # URL encode the file path
-        file_path = f"10 Projects/{project_name}/{file_name}"
-        encoded_path = urllib.parse.quote(file_path)
-
+        encoded_path = urllib.parse.quote(vault_relative_path)
         return f"obsidian://open?vault={vault_name}&file={encoded_path}"
+
+    def get_inbox_folders(self) -> list[dict[str, str]]:
+        """Get configured vault folders for the unified inbox report (ADR-002).
+
+        Returns:
+            List of {label, path} dicts; path is relative to the vault root.
+        """
+        return self.get("inbox_folders", [])
 
     def open_obsidian_note(self, project_name: str, file_name: str) -> bool:
         """Open an Obsidian note using the obsidian:// URL scheme."""
