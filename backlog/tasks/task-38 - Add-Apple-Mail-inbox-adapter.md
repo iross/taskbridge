@@ -4,6 +4,7 @@ title: Add Apple Mail inbox adapter
 status: To Do
 assignee: []
 created_date: '2026-08-07 18:53'
+updated_date: '2026-08-11 19:52'
 labels: []
 dependencies:
   - TASK-36
@@ -17,5 +18,10 @@ Detect unprocessed mail (unread or still in Inbox), actioned mail (replied, or m
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Adapter correctly classifies a message into unprocessed/actioned/filed based on read state, reply state, and mailbox location,Adapter is isolated behind a function boundary so it can be tested with a fake AppleScript response,Adapter is not invoked at all when the 'mail' module is disabled for the active profile,Failure to reach Mail.app (not running, permissions denied) produces a clear error, not a silent zero count,'inbox report' includes Mail counts and oldest-unprocessed age when enabled,Each returned message includes a message://<message-id> URI captured via AppleScript so it can be opened directly in Mail for reply
+- [ ] #1 Adapter correctly classifies a message into unprocessed/actioned/filed based on read state, reply state, and mailbox location
+- [ ] #2 Adapter is isolated behind a function boundary so it can be tested with a fake AppleScript response
+- [ ] #3 Adapter is not invoked at all when the 'mail' module is disabled for the active profile
+- [ ] #4 Failure to reach Mail.app (not running, permissions denied) produces a clear error, not a silent zero count
+- [ ] #5 'inbox report' includes Mail counts and oldest-unprocessed age when enabled
+- [ ] #6 Each returned message includes a message://<message-id> URI captured via AppleScript so it can be opened directly in Mail for reply
 <!-- AC:END -->
