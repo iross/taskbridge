@@ -41,3 +41,50 @@ class TestInboxFolders:
         config._config_data = {"inbox_folders": [{"label": "inbox", "path": "00 Inbox"}]}
 
         assert config.get_inbox_folders() == [{"label": "inbox", "path": "00 Inbox"}]
+
+
+def make_config(monkeypatch, config_data):
+    monkeypatch.setattr(Config, "__init__", lambda self: None)
+    config = Config()
+    config._config_data = config_data
+    return config
+
+
+class TestModuleProfiles:
+    """Tests for is_module_enabled (ADR-003)."""
+
+    PROFILES = {
+        "home": {"enabled_modules": ["obsidian_inbox", "todoist_inbox"]},
+        "work": {"enabled_modules": ["obsidian_inbox", "todoist_inbox", "mail", "drafts"]},
+    }
+
+    def test_uses_default_profile_when_none_given(self, monkeypatch):
+        config = make_config(monkeypatch, {"default_profile": "home", "profiles": self.PROFILES})
+
+        assert config.is_module_enabled("obsidian_inbox") is True
+        assert config.is_module_enabled("mail") is False
+
+    def test_explicit_profile_overrides_default(self, monkeypatch):
+        config = make_config(monkeypatch, {"default_profile": "home", "profiles": self.PROFILES})
+
+        assert config.is_module_enabled("mail", profile="work") is True
+
+    def test_module_not_listed_in_any_profile_is_disabled(self, monkeypatch):
+        config = make_config(monkeypatch, {"default_profile": "work", "profiles": self.PROFILES})
+
+        assert config.is_module_enabled("fantastical") is False
+
+    def test_missing_profiles_block_disables_everything(self, monkeypatch):
+        config = make_config(monkeypatch, {"default_profile": "home"})
+
+        assert config.is_module_enabled("obsidian_inbox") is False
+
+    def test_no_default_profile_and_no_explicit_profile_disables_everything(self, monkeypatch):
+        config = make_config(monkeypatch, {"profiles": self.PROFILES})
+
+        assert config.is_module_enabled("obsidian_inbox") is False
+
+    def test_unknown_explicit_profile_disables_everything(self, monkeypatch):
+        config = make_config(monkeypatch, {"profiles": self.PROFILES})
+
+        assert config.is_module_enabled("obsidian_inbox", profile="vacation") is False

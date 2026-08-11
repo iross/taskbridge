@@ -60,6 +60,32 @@ class Config:
         """Get Todoist sync label for automatic note creation."""
         return self.get("todoist_sync_label", "@obsidian")
 
+    def get_profiles(self) -> dict[str, dict]:
+        """Get named profiles mapping profile name to {enabled_modules: [...]}."""
+        return self.get("profiles", {})
+
+    def get_default_profile(self) -> str | None:
+        """Get the machine's default profile name, if configured."""
+        return self.get("default_profile")
+
+    def is_module_enabled(self, module_name: str, profile: str | None = None) -> bool:
+        """Check whether a module is enabled for the given (or default) profile.
+
+        Resolves the active profile as: explicit `profile` arg, else
+        `default_profile`. If no profile resolves, or the resolved profile
+        isn't defined, or the module isn't listed under it, the module is
+        disabled - an unconfigured module never silently appears.
+        """
+        active_profile = profile or self.get_default_profile()
+        if not active_profile:
+            return False
+
+        profile_config = self.get_profiles().get(active_profile)
+        if not profile_config:
+            return False
+
+        return module_name in profile_config.get("enabled_modules", [])
+
     def get_meetings(self) -> dict[str, dict]:
         """Get all defined recurring meeting templates.
 
