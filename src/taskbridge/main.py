@@ -371,7 +371,7 @@ def inbox_report(
 
     typer.echo()
     for i, item in enumerate(items, 1):
-        typer.echo(f"{i}. [{item.label}] {item.path} ({item.age_days:.1f}d)")
+        typer.echo(f"{i}. [{item.label}] {item.description} ({item.age_days:.1f}d)")
 
 
 # ============================================================================

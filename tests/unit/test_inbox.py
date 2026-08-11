@@ -2,6 +2,8 @@
 
 import os
 import time
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
@@ -13,6 +15,7 @@ from taskbridge.inbox import (
     group_by_label,
     scan_all,
     scan_obsidian_folders,
+    scan_todoist_inbox,
 )
 from taskbridge.main import app
 
@@ -135,15 +138,98 @@ class TestScanAll:
 
         assert scan_all(vault_config, profile="home") == []
 
+    @patch("taskbridge.todoist_api.TodoistAPI")
+    def test_scans_todoist_when_enabled(self, mock_api_cls, vault_config):
+        vault_config.is_module_enabled.side_effect = lambda name, profile=None: (
+            name == "todoist_inbox"
+        )
+        mock_api = mock_api_cls.return_value
+        mock_api.get_projects.return_value = [SimpleNamespace(id="inbox-1", is_inbox_project=True)]
+        mock_api.get_tasks.return_value = [
+            SimpleNamespace(id="1", content="Task", created_at=datetime.now(UTC).isoformat())
+        ]
+
+        items = scan_all(vault_config, profile="home")
+
+        assert len(items) == 1
+        assert items[0].label == "todoist_inbox"
+
+
+class TestScanTodoistInbox:
+    """Tests for scan_todoist_inbox."""
+
+    def _config(self):
+        config = Mock()
+        config.get_todoist_token.return_value = "test-token"
+        return config
+
+    def test_no_token_returns_no_items(self):
+        config = Mock()
+        config.get_todoist_token.return_value = None
+        assert scan_todoist_inbox(config) == []
+
+    @patch("taskbridge.todoist_api.TodoistAPI")
+    def test_no_inbox_project_returns_no_items(self, mock_api_cls):
+        mock_api = mock_api_cls.return_value
+        mock_api.get_projects.return_value = [SimpleNamespace(id="p1", is_inbox_project=False)]
+
+        assert scan_todoist_inbox(self._config()) == []
+
+    @patch("taskbridge.todoist_api.TodoistAPI")
+    def test_empty_inbox_returns_no_items(self, mock_api_cls):
+        mock_api = mock_api_cls.return_value
+        mock_api.get_projects.return_value = [SimpleNamespace(id="inbox-1", is_inbox_project=True)]
+        mock_api.get_tasks.return_value = []
+
+        assert scan_todoist_inbox(self._config()) == []
+
+    @patch("taskbridge.todoist_api.TodoistAPI")
+    def test_stale_task_age_computed_from_created_at(self, mock_api_cls):
+        mock_api = mock_api_cls.return_value
+        mock_api.get_projects.return_value = [SimpleNamespace(id="inbox-1", is_inbox_project=True)]
+        created = (datetime.now(UTC) - timedelta(days=5)).isoformat()
+        mock_api.get_tasks.return_value = [
+            SimpleNamespace(id="1", content="Old task", created_at=created)
+        ]
+
+        items = scan_todoist_inbox(self._config())
+
+        assert len(items) == 1
+        assert items[0].label == "todoist_inbox"
+        assert items[0].description == "Old task"
+        assert items[0].age_days == pytest.approx(5, abs=0.01)
+
+    @patch("taskbridge.todoist_api.TodoistAPI")
+    def test_item_includes_showtask_uri(self, mock_api_cls):
+        mock_api = mock_api_cls.return_value
+        mock_api.get_projects.return_value = [SimpleNamespace(id="inbox-1", is_inbox_project=True)]
+        mock_api.get_tasks.return_value = [
+            SimpleNamespace(id="42", content="Task", created_at=datetime.now(UTC).isoformat())
+        ]
+
+        items = scan_todoist_inbox(self._config())
+
+        assert items[0].uri == "https://todoist.com/showTask?id=42"
+
+    @patch("taskbridge.todoist_api.TodoistAPI")
+    def test_fetches_tasks_scoped_to_inbox_project_id(self, mock_api_cls):
+        mock_api = mock_api_cls.return_value
+        mock_api.get_projects.return_value = [SimpleNamespace(id="inbox-99", is_inbox_project=True)]
+        mock_api.get_tasks.return_value = []
+
+        scan_todoist_inbox(self._config())
+
+        mock_api.get_tasks.assert_called_once_with(project_id="inbox-99")
+
 
 class TestGroupByLabel:
     """Tests for group_by_label."""
 
     def test_groups_and_finds_oldest_per_label(self):
         items = [
-            InboxItem(label="inbox", path="a.md", age_days=1.0, uri=""),
-            InboxItem(label="inbox", path="b.md", age_days=5.0, uri=""),
-            InboxItem(label="literature", path="c.md", age_days=2.0, uri=""),
+            InboxItem(label="inbox", description="a.md", age_days=1.0, uri=""),
+            InboxItem(label="inbox", description="b.md", age_days=5.0, uri=""),
+            InboxItem(label="literature", description="c.md", age_days=2.0, uri=""),
         ]
 
         assert group_by_label(items) == [
@@ -202,3 +288,4 @@ class TestInboxReportCommand:
             runner.invoke(app, ["inbox", "report", "--profile", "work"])
 
             cfg.is_module_enabled.assert_any_call("obsidian_inbox", profile="work")
+            cfg.is_module_enabled.assert_any_call("todoist_inbox", profile="work")

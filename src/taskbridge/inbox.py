@@ -2,13 +2,14 @@
 
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .config import Config
 from .config import config as default_config
 
 # Module names gated by profile (ADR-003). Extended as adapters land.
-INBOX_MODULES = ("obsidian_inbox",)
+INBOX_MODULES = ("obsidian_inbox", "todoist_inbox")
 
 
 @dataclass
@@ -16,7 +17,7 @@ class InboxItem:
     """A single unprocessed item surfaced by an inbox scanner."""
 
     label: str
-    path: str
+    description: str
     age_days: float
     uri: str
 
@@ -56,7 +57,37 @@ def _scan_folder(
         age_days = (now - md_file.stat().st_mtime) / 86400
         file_relative = f"{relative_path}/{md_file.name}"
         uri = config_manager.generate_obsidian_file_url(file_relative)
-        items.append(InboxItem(label=label, path=str(md_file), age_days=age_days, uri=uri))
+        items.append(InboxItem(label=label, description=str(md_file), age_days=age_days, uri=uri))
+    return items
+
+
+def scan_todoist_inbox(config_manager: Config | None = None) -> list[InboxItem]:
+    """Scan the Todoist Inbox project for unprocessed tasks.
+
+    Returns no items (rather than raising) when Todoist isn't configured or no
+    Inbox project can be found - a missing/misconfigured source shouldn't break
+    the rest of the report, matching the folder scanner's behavior.
+    """
+    config_manager = config_manager or default_config
+    if not config_manager.get_todoist_token():
+        return []
+
+    from .todoist_api import TodoistAPI
+
+    api = TodoistAPI(config_manager.get_todoist_token())
+    inbox_project = next((p for p in api.get_projects() if p.is_inbox_project), None)
+    if inbox_project is None:
+        return []
+
+    now = datetime.now(UTC)
+    items = []
+    for task in api.get_tasks(project_id=inbox_project.id):
+        created = datetime.fromisoformat(task.created_at) if task.created_at else now
+        age_days = (now - created).total_seconds() / 86400
+        uri = f"https://todoist.com/showTask?id={task.id}"
+        items.append(
+            InboxItem(label="todoist_inbox", description=task.content, age_days=age_days, uri=uri)
+        )
     return items
 
 
@@ -74,6 +105,8 @@ def scan_all(config_manager: Config | None = None, profile: str | None = None) -
     items: list[InboxItem] = []
     if "obsidian_inbox" in active_modules:
         items.extend(scan_obsidian_folders(config_manager.get_inbox_folders(), config_manager))
+    if "todoist_inbox" in active_modules:
+        items.extend(scan_todoist_inbox(config_manager))
     return items
 
 

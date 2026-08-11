@@ -25,8 +25,8 @@ Config is stored at `~/.taskbridge/config.yaml`.
 
 ## Unified inbox report (ADR-002 / ADR-003)
 
-Reports outstanding items across Obsidian folders from one command, gated by a per-machine
-profile so work-only sources (e.g. Mail, once built) stay off at home.
+Reports outstanding items across Obsidian folders and the Todoist Inbox project from one command,
+gated by a per-machine profile so work-only sources (e.g. Mail, once built) stay off at home.
 
 There's no CLI command yet for the config keys below — add them to `~/.taskbridge/config.yaml` by
 hand:
@@ -40,9 +40,9 @@ inbox_folders:
 default_profile: home
 profiles:
   home:
-    enabled_modules: [obsidian_inbox]
+    enabled_modules: [obsidian_inbox, todoist_inbox]
   work:
-    enabled_modules: [obsidian_inbox, mail, drafts]
+    enabled_modules: [obsidian_inbox, todoist_inbox, mail, drafts]
 ```
 
 Usage:
