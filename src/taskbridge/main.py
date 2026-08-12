@@ -784,7 +784,7 @@ def task_select(
                 due_str = task.due.get("date", "")
 
             # Format line with all requested info (using simple separators, no emojis)
-            parts = [task.id, task.content]
+            parts = [task.id, format_task_priority(task.content, task.priority)]
             if project_name:
                 parts.append(f"[{project_name}]")
             if labels_str:
@@ -803,6 +803,7 @@ def task_select(
         result = subprocess.run(
             [
                 "fzf",
+                "--ansi",
                 "--height",
                 "50%",
                 "--layout=reverse",
@@ -2096,6 +2097,21 @@ def format_tag_pill(tag: str) -> str:
 def format_tag_pills(tags: list[str]) -> str:
     """Render a list of tags as space-separated pills."""
     return " ".join(format_tag_pill(t) for t in tags)
+
+
+# Todoist priority (API int) -> flag color, matching Todoist's own p1/p2/p3 colors.
+# Priority 1 (no flag) is left unstyled.
+PRIORITY_COLOR: dict[int, tuple[int, int, int]] = {
+    4: (235, 87, 87),  # p1 - red
+    3: (242, 153, 74),  # p2 - orange
+    2: (86, 156, 214),  # p3 - blue
+}
+
+
+def format_task_priority(text: str, priority: int) -> str:
+    """Color text by Todoist priority; text passes through unstyled at priority 1."""
+    color = PRIORITY_COLOR.get(priority)
+    return typer.style(text, fg=color) if color else text
 
 
 def split_description_tags(description: str) -> tuple[str, list[str]]:
