@@ -834,10 +834,12 @@ def task_select(
 
 @task_app.command("note")
 def task_note(
-    task_id: str,
+    task_id: str | None = typer.Argument(
+        None, help="Todoist task ID. Defaults to the currently active (time-tracked) task."
+    ),
     open_note: bool = typer.Option(True, "--open/--no-open", help="Open note after creation"),
 ):
-    """Create or recreate an Obsidian note for a Todoist task."""
+    """Create or open an Obsidian note for a Todoist task."""
     if not config_manager.get_todoist_token():
         typer.echo("❌ Todoist not configured. Run 'taskbridge config todoist' first.")
         raise typer.Exit(1) from None
@@ -845,6 +847,13 @@ def task_note(
     if not config_manager.get_obsidian_vault_path():
         typer.echo("❌ Obsidian not configured. Run 'taskbridge config obsidian' first.")
         raise typer.Exit(1) from None
+
+    if task_id is None:
+        active = db.get_active_tracking()
+        if not active or not active.todoist_task_id:
+            typer.echo("❌ No active task. Pass a task ID or start tracking one first.")
+            raise typer.Exit(1) from None
+        task_id = active.todoist_task_id
 
     try:
         api = TodoistAPI()
