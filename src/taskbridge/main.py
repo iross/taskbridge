@@ -924,34 +924,35 @@ def task_note(
         except Exception as e:
             typer.echo(f"⚠️  Warning: Could not add comment: {e}")
 
-        # Auto-start time tracking
-        try:
-            typer.echo("\n⏱️  Starting time tracking...")
+        # Auto-start time tracking (unless already tracking this task)
+        active = db.get_active_tracking()
+        if active and active.todoist_task_id == task_id:
+            typer.echo("\n⏱️  Time tracking already active for this task")
+        else:
+            try:
+                typer.echo("\n⏱️  Starting time tracking...")
 
-            # Stop any active tracking first
-            active = db.get_active_tracking()
-            if active and active.todoist_task_id != task_id:
-                stop_tracking_internal(active)
-                typer.echo("   ⏹️  Stopped previous tracking")
+                if active:
+                    stop_tracking_internal(active)
+                    typer.echo("   ⏹️  Stopped previous tracking")
 
-            # Start new tracking
-            bartib = BartibIntegration()
-            bartib_project = build_bartib_project(project_name, client_name)
-            description = append_tags_to_description(task.content, task.labels)
+                bartib = BartibIntegration()
+                bartib_project = build_bartib_project(project_name, client_name)
+                description = append_tags_to_description(task.content, task.labels)
 
-            bartib.start_tracking(description=description, project=bartib_project)
+                bartib.start_tracking(description=description, project=bartib_project)
 
-            db.create_tracking_record(
-                todoist_task_id=task_id,
-                project_name=bartib_project,
-                task_name=description,
-                started_at=datetime.now(),
-            )
+                db.create_tracking_record(
+                    todoist_task_id=task_id,
+                    project_name=bartib_project,
+                    task_name=description,
+                    started_at=datetime.now(),
+                )
 
-            typer.echo("✅ Time tracking started")
+                typer.echo("✅ Time tracking started")
 
-        except Exception as e:
-            typer.echo(f"⚠️  Warning: Could not start time tracking: {e}")
+            except Exception as e:
+                typer.echo(f"⚠️  Warning: Could not start time tracking: {e}")
 
         # Open note if requested
         if open_note and config_manager.open_obsidian_note(project_name, note_path.name):
