@@ -220,7 +220,17 @@ HTML = """<!DOCTYPE html>
       font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.12em;
       color: var(--muted); padding-bottom: 8px;
       border-bottom: 1px solid var(--border); margin-bottom: 10px;
+      display: flex; align-items: baseline; justify-content: space-between;
     }
+    .report-heading-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .report-toggle {
+      cursor: pointer; user-select: none; flex-shrink: 0; margin-left: 8px;
+      font-size: 0.65rem; text-transform: none; letter-spacing: 0;
+      color: var(--muted); border: 1px solid var(--border); border-radius: 10px;
+      padding: 1px 8px;
+    }
+    .report-toggle:hover { color: var(--text); border-color: var(--text); }
+    .report-toggle.on { color: var(--accent); border-color: var(--accent); }
     .report-client-row {
       display: flex; justify-content: space-between; align-items: baseline;
       font-size: 0.8rem; font-weight: 600; margin: 10px 0 4px;
@@ -585,6 +595,7 @@ HTML = """<!DOCTYPE html>
       <div class="edit-grid" id="edit-modal-fields"></div>
       <div class="edit-actions">
         <button class="btn btn-save" onclick="saveEditModal()">Save</button>
+        <span id="edit-modal-note"></span>
         <button class="btn btn-resume" id="edit-modal-resume" onclick="resumeActivityModal()">&#9654; Resume</button>
         <button class="btn btn-del" onclick="deleteActivityModal()">Delete</button>
         <button class="btn btn-cancel" onclick="closeEditModal()">Cancel</button>
@@ -619,6 +630,21 @@ HTML = """<!DOCTYPE html>
   var allActivities = [];
   var dayLabels = {};
   var visibleDays = new Set();
+  var lastReportDayKey = null;
+  var reportPercentMode = false;
+  try { reportPercentMode = localStorage.getItem('reportPercentMode') === '1'; } catch (e) {}
+
+  function toggleReportPercent() {
+    reportPercentMode = !reportPercentMode;
+    try { localStorage.setItem('reportPercentMode', reportPercentMode ? '1' : '0'); } catch (e) {}
+    renderReport(allActivities, lastReportDayKey);
+  }
+
+  function fmtAmount(secs, totalSecs) {
+    if (!reportPercentMode) return fmtDur(secs);
+    if (!totalSecs) return '0%';
+    return Math.round((secs / totalSecs) * 100) + '%';
+  }
 
   function toggleMeetingPanel() {
     meetingPanelOpen = !meetingPanelOpen;
@@ -939,13 +965,20 @@ HTML = """<!DOCTYPE html>
     setupDayObserver();
   }
 
+  function reportToggleHtml() {
+    return '<span class="report-toggle' + (reportPercentMode ? ' on' : '') + '" onclick="toggleReportPercent()" title="Toggle between time and % of day">' +
+      (reportPercentMode ? '%' : '⏱') + '</span>';
+  }
+
   function renderReport(acts, dayKey) {
     if (!dayKey) dayKey = new Date().toDateString();
+    lastReportDayKey = dayKey;
     var panel = document.getElementById('daily-report');
     var dayActs = acts.filter(function(a) { return new Date(a.started_at).toDateString() === dayKey; });
     var label = dayLabels[dayKey] || dayKey;
     if (!dayActs.length) {
-      panel.innerHTML = '<div class="report-heading">' + esc(label) + '</div><div class="report-empty">No entries.</div>';
+      panel.innerHTML = '<div class="report-heading"><span class="report-heading-label">' + esc(label) + '</span>' +
+        reportToggleHtml() + '</div><div class="report-empty">No entries.</div>';
       return;
     }
     var clients = {};
@@ -974,17 +1007,18 @@ HTML = """<!DOCTYPE html>
         labels[lbl] += secs;
       }
     }
-    var html = '<div class="report-heading">' + esc(label) + ' &nbsp; ' + fmtDur(totalSecs) + '</div>';
+    var html = '<div class="report-heading"><span class="report-heading-label">' + esc(label) +
+      ' &nbsp; ' + fmtDur(totalSecs) + '</span>' + reportToggleHtml() + '</div>';
     for (var ci = 0; ci < clientOrder.length; ci++) {
       var cname = clientOrder[ci];
       var c = clients[cname];
       html += '<div class="report-client-row" style="color:' + clientColor(cname + '::x') + '">' +
-        esc(cname) + '<span class="report-client-dur">' + fmtDur(c.total) + '</span></div>';
+        esc(cname) + '<span class="report-client-dur">' + fmtAmount(c.total, totalSecs) + '</span></div>';
       for (var pi = 0; pi < c.projOrder.length; pi++) {
         var pname = c.projOrder[pi];
         var p = c.projects[pname];
         html += '<div class="report-proj-row"><span>' + esc(pname.replace(/-/g, ' ')) + '</span>' +
-          '<span class="report-proj-dur">' + fmtDur(p.total) + '</span></div>';
+          '<span class="report-proj-dur">' + fmtAmount(p.total, totalSecs) + '</span></div>';
         if (p.descs.length) {
           html += '<div class="report-descs">' + esc(p.descs.join(', ')) + '</div>';
         }
@@ -995,7 +1029,7 @@ HTML = """<!DOCTYPE html>
       for (var li = 0; li < labelOrder.length; li++) {
         var lbl = labelOrder[li];
         html += '<div class="report-label-row"><span>' + tagChips([lbl]) + '</span>' +
-          '<span class="report-proj-dur">' + fmtDur(labels[lbl]) + '</span></div>';
+          '<span class="report-proj-dur">' + fmtAmount(labels[lbl], totalSecs) + '</span></div>';
       }
     }
     panel.innerHTML = html;
@@ -1313,8 +1347,40 @@ HTML = """<!DOCTYPE html>
       '<div><label>Description</label><input type="text" id="em-description" value="' + esc(a.description) + '"></div>';
     var resumeBtn = document.getElementById('edit-modal-resume');
     resumeBtn.style.display = a.active ? 'none' : '';
+    var noteEl = document.getElementById('edit-modal-note');
+    if (a.todoist_task_id) {
+      noteEl.innerHTML = a.note_url
+        ? '<button class="btn btn-note" data-note-url="' + esc(a.note_url) + '" onclick="openNote(this)">&#128196; Note</button>'
+        : '<button class="btn btn-note" onclick="createActivityNote(this)">&#128196; Note</button>';
+    } else {
+      noteEl.innerHTML = '';
+    }
     document.getElementById('edit-modal-err').textContent = '';
     document.getElementById('edit-modal').classList.add('open');
+  }
+
+  function createActivityNote(btn) {
+    var a = activityData[editModalKey];
+    if (!a || !a.todoist_task_id) return;
+    btn.disabled = true;
+    btn.textContent = '…';
+    fetch('/api/activity/note', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({todoist_task_id: a.todoist_task_id})
+    }).then(function(r){ return r.json(); }).then(function(data) {
+      if (data.success) {
+        window.location.href = data.note_url;
+      } else {
+        btn.disabled = false;
+        btn.textContent = '📄 Note';
+        document.getElementById('edit-modal-err').textContent = data.error || 'Failed to create note';
+      }
+    }).catch(function() {
+      btn.disabled = false;
+      btn.textContent = '📄 Note';
+      document.getElementById('edit-modal-err').textContent = 'Network error';
+    });
   }
 
   function closeEditModal() {
@@ -1541,6 +1607,63 @@ HTML = """<!DOCTYPE html>
 </html>"""
 
 
+def _get_or_create_task_note(task_id: str) -> tuple[str, bool]:
+    """Return (obsidian_url, is_new) for the note mapped to a Todoist task.
+
+    Creates the note, its Todoist mapping, and a linking task comment when no
+    mapping exists yet; otherwise returns the existing note unchanged.
+    """
+    existing = db.get_todoist_note_by_task_id(task_id)
+    if existing:
+        return existing.obsidian_url, False
+
+    from .config import config as config_manager
+    from .main import resolve_project_info
+
+    api = TodoistAPI()
+    task = api.get_task(task_id)
+    if not task:
+        raise ValueError("Task not found in Todoist")
+
+    project_name, client_name = resolve_project_info(task.project_id, api)
+    note_path = config_manager.create_task_note(
+        project_name=project_name,
+        task_title=task.content,
+        client=client_name,
+        status="backlog",
+        tags=task.labels,
+    )
+    obsidian_url = config_manager.generate_obsidian_url(project_name, note_path.name)
+
+    mapping = TodoistNoteMapping(
+        todoist_task_id=task_id,
+        todoist_project_id=task.project_id,
+        note_path=str(note_path),
+        obsidian_url=obsidian_url,
+    )
+    db.create_todoist_note_mapping(mapping)
+
+    with contextlib.suppress(Exception):
+        api.create_comment(task_id, f"📝 Obsidian note: [Open Note]({obsidian_url})")
+
+    return obsidian_url, True
+
+
+def _tracking_task_ids(cutoff: datetime) -> dict[str, str]:
+    """Map minute-precision started_at ISO strings to todoist_task_id.
+
+    Bartib's log file only has minute precision, so this lets `_read_activities`
+    join a parsed activity row back to the task_time_tracking record (which has
+    full precision) created when tracking for it started.
+    """
+    records = db.get_tracking_in_range(cutoff, datetime.now() + timedelta(days=1))
+    return {
+        r.started_at.replace(second=0, microsecond=0).isoformat(): r.todoist_task_id
+        for r in records
+        if r.started_at and r.todoist_task_id
+    }
+
+
 def _read_activities(days: int = 7) -> list[dict]:
     """Read activities from bartib file, newest first, for the last N days."""
     bartib_file = os.environ.get("BARTIB_FILE", "")
@@ -1548,6 +1671,8 @@ def _read_activities(days: int = 7) -> list[dict]:
         return []
 
     cutoff = datetime.now() - timedelta(days=days)
+    task_ids_by_start = _tracking_task_ids(cutoff)
+    note_urls_by_task = {m.todoist_task_id: m.obsidian_url for m in db.get_all_todoist_mappings()}
     activities: list[dict] = []
 
     try:
@@ -1576,6 +1701,9 @@ def _read_activities(days: int = 7) -> list[dict]:
                 if started_at < cutoff:
                     continue
 
+                task_id = task_ids_by_start.get(started_at.isoformat(), "")
+                has_todoist_task = bool(task_id and not task_id.startswith(("meeting:", "cal:")))
+
                 activities.append(
                     {
                         "project": project,
@@ -1584,6 +1712,8 @@ def _read_activities(days: int = 7) -> list[dict]:
                         "stopped_at": stopped_at.isoformat() if stopped_at else None,
                         "duration_seconds": duration,
                         "active": active,
+                        "todoist_task_id": task_id if has_todoist_task else "",
+                        "note_url": note_urls_by_task.get(task_id) if has_todoist_task else None,
                     }
                 )
     except OSError:
@@ -1880,6 +2010,8 @@ class TimeWebHandler(BaseHTTPRequestHandler):
             self._handle_activity_resume(body)
         elif path == "/api/note/create":
             self._handle_note_create()
+        elif path == "/api/activity/note":
+            self._handle_activity_note(body)
         elif path == "/api/complete":
             self._handle_complete()
         elif path == "/api/meeting/start":
@@ -2179,46 +2311,19 @@ class TimeWebHandler(BaseHTTPRequestHandler):
             self._send_json({"success": False, "error": "No active Todoist task"}, 400)
             return
         try:
-            from .config import config as config_manager
-            from .main import resolve_project_info
+            note_url, is_new = _get_or_create_task_note(active.todoist_task_id)
+            self._send_json({"success": True, "note_url": note_url, "new": is_new})
+        except Exception as e:
+            self._send_json({"success": False, "error": str(e)}, 500)
 
-            # Return existing note if already mapped
-            existing = db.get_todoist_note_by_task_id(active.todoist_task_id)
-            if existing:
-                self._send_json({"success": True, "note_url": existing.obsidian_url, "new": False})
-                return
-
-            api = TodoistAPI()
-            task = api.get_task(active.todoist_task_id)
-            if not task:
-                self._send_json({"success": False, "error": "Task not found in Todoist"}, 404)
-                return
-
-            project_name, client_name = resolve_project_info(task.project_id, api)
-            note_path = config_manager.create_task_note(
-                project_name=project_name,
-                task_title=task.content,
-                client=client_name,
-                status="backlog",
-                tags=task.labels,
-            )
-            obsidian_url = config_manager.generate_obsidian_url(project_name, note_path.name)
-
-            mapping = TodoistNoteMapping(
-                todoist_task_id=active.todoist_task_id,
-                todoist_project_id=task.project_id,
-                note_path=str(note_path),
-                obsidian_url=obsidian_url,
-            )
-            db.create_todoist_note_mapping(mapping)
-
-            with contextlib.suppress(Exception):
-                api.create_comment(
-                    active.todoist_task_id,
-                    f"📝 Obsidian note: [Open Note]({obsidian_url})",
-                )
-
-            self._send_json({"success": True, "note_url": obsidian_url, "new": True})
+    def _handle_activity_note(self, body: dict):
+        task_id = body.get("todoist_task_id", "").strip()
+        if not task_id or task_id.startswith(("meeting:", "cal:")):
+            self._send_json({"success": False, "error": "No linked Todoist task"}, 400)
+            return
+        try:
+            note_url, is_new = _get_or_create_task_note(task_id)
+            self._send_json({"success": True, "note_url": note_url, "new": is_new})
         except Exception as e:
             self._send_json({"success": False, "error": str(e)}, 500)
 
