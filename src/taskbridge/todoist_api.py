@@ -28,6 +28,17 @@ class TodoistProject:
 
 
 @dataclass
+class TodoistLabel:
+    """Todoist personal label data structure."""
+
+    id: str
+    name: str
+    color: str = ""
+    order: int = 0
+    is_favorite: bool = False
+
+
+@dataclass
 class TodoistTask:
     """Todoist task data structure."""
 
@@ -190,6 +201,24 @@ class TodoistAPI:
             raise
         except Exception as e:
             self.logger.error(f"Failed to get project {project_id}: {e}")
+            raise
+
+    def get_labels(self) -> list[TodoistLabel]:
+        """Get all personal labels."""
+        try:
+            data = self._get_paginated("/labels")
+            return [
+                TodoistLabel(
+                    id=label_data["id"],
+                    name=label_data["name"],
+                    color=label_data.get("color", ""),
+                    order=label_data.get("order", 0),
+                    is_favorite=label_data.get("is_favorite", False),
+                )
+                for label_data in data
+            ]
+        except Exception as e:
+            self.logger.error(f"Failed to get labels: {e}")
             raise
 
     def create_project(

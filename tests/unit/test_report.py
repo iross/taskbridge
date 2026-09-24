@@ -62,6 +62,24 @@ class TestParseProjectSegments:
         _, _, tags = parse_project_segments("CHTC::NAIRR")
         assert tags == []
 
+    def test_bare_name_matching_known_client_resolves_to_client(self):
+        from taskbridge.main import parse_project_segments
+
+        assert parse_project_segments("CHTC", known_clients={"CHTC"}) == (
+            "CHTC",
+            "(other)",
+            [],
+        )
+
+    def test_bare_name_not_in_known_clients_goes_to_other(self):
+        from taskbridge.main import parse_project_segments
+
+        assert parse_project_segments("meetings", known_clients={"CHTC"}) == (
+            "(other)",
+            "meetings",
+            [],
+        )
+
 
 # ============================================================================
 # build_report_entries
@@ -120,6 +138,29 @@ class TestBuildReportEntries:
         entries = build_report_entries(records, now=datetime(2026, 2, 25, 9, 0))
 
         assert entries == []
+
+    def test_bare_project_matching_known_client_credited_to_client(self):
+        from taskbridge.main import build_report_entries
+
+        records = [
+            self._record(
+                "CHTC::NAIRR",
+                "Write-up",
+                datetime(2026, 2, 25, 9, 0),
+                datetime(2026, 2, 25, 10, 0),
+            ),
+            self._record(
+                "CHTC",
+                "Dropped project suffix",
+                datetime(2026, 2, 25, 11, 0),
+                datetime(2026, 2, 25, 11, 30),
+            ),
+        ]
+        entries = build_report_entries(records, now=datetime(2026, 2, 25, 12, 0))
+
+        dropped_entry = next(e for e in entries if e.project == "(other)")
+        assert dropped_entry.client == "CHTC"
+        assert dropped_entry.seconds == 1800
 
     def test_no_separator_maps_to_other(self):
         from taskbridge.main import build_report_entries
