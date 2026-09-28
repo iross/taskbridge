@@ -4,6 +4,7 @@ title: Add notebook-sweep and daily-top-3 standing tasks to Todoist
 status: To Do
 assignee: []
 created_date: '2026-08-07 18:59'
+updated_date: '2026-09-24 14:27'
 labels: []
 dependencies:
   - TASK-27
@@ -18,5 +19,8 @@ Two handwriting-adjacent rituals should exist as always-present standing tasks o
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 'Sweep the notebook' exists in Todoist with the standing-task label and a weekly recurrence,'Write today's top 3 + flag top priority' exists in Todoist with the standing-task label and a daily recurrence,No taskbridge code changes beyond what task-27 already provides - this is about creating the Todoist items themselves, not new adapters or scanners,Both tasks appear correctly when filtering to standing tasks via the mechanism task-27 establishes
+- [ ] #1 'Sweep the notebook' exists in Todoist with the standing-task label and a weekly recurrence
+- [ ] #2 'Write today's top 3 + flag top priority' exists in Todoist with the standing-task label and a daily recurrence
+- [ ] #3 No taskbridge code changes beyond what task-27 already provides - this is about creating the Todoist items themselves, not new adapters or scanners
+- [ ] #4 Both tasks appear correctly when filtering to standing tasks via the mechanism task-27 establishes
 <!-- AC:END -->
