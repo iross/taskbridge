@@ -11,7 +11,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from .bartib_integration import BartibIntegration
-from .database import TodoistNoteMapping, db
+from .database import TodoistNoteMapping, db, is_real_todoist_task_id
 from .todoist_api import TodoistAPI
 
 HTML = """<!DOCTYPE html>
@@ -33,6 +33,7 @@ HTML = """<!DOCTYPE html>
       --border: #2e2e2e;
       --input-bg: #252525;
       --meeting: #5c7cfa;
+      --ongoing: #20c997;
     }
     @media (prefers-color-scheme: light) {
       :root {
@@ -45,6 +46,7 @@ HTML = """<!DOCTYPE html>
         --border: #ddd;
         --input-bg: #fafafa;
         --meeting: #3b5bdb;
+        --ongoing: #0ca678;
       }
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -116,6 +118,8 @@ HTML = """<!DOCTYPE html>
     .btn-note:hover { color: var(--text); border-color: var(--text); opacity: 1; }
     .btn-meeting { background: transparent; color: var(--muted); border: 1px solid var(--border); }
     .btn-meeting.on { background: var(--meeting); color: #fff; border-color: var(--meeting); }
+    .btn-ongoing { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+    .btn-ongoing.on { background: var(--ongoing); color: #fff; border-color: var(--ongoing); }
     .btn:hover { opacity: 0.82; }
     .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
     .form-full { margin-bottom: 12px; }
@@ -543,8 +547,37 @@ HTML = """<!DOCTYPE html>
     <div class="form-actions">
       <span class="err" id="form-err"></span>
       <div style="display:flex;gap:8px;align-items:center">
-        <div class="meeting-wrap">
-          <button id="btn-meeting" class="btn btn-meeting" onclick="toggleMeetingPanel()">&#128197; Meeting</button>
+        <div class="meeting-wrap" id="ongoing-wrap">
+          <button id="btn-ongoing" class="btn btn-ongoing" onclick="togglePanel('ongoing')">&infin; Ongoing</button>
+          <div id="ongoing-drop" class="meeting-drop">
+            <div class="meeting-drop-section">
+              <div class="meeting-drop-label">Ongoing</div>
+              <div id="ongoing-list"></div>
+            </div>
+            <div class="meeting-drop-section">
+              <div class="meeting-define-toggle" onclick="toggleDefineForm('ongoing')">&#43; Define New Ongoing Item</div>
+              <div id="ongoing-define-form" class="meeting-define-form">
+                <span class="df-label">Alias</span>
+                <input id="ongoing-alias" type="text" placeholder="e.g. email">
+                <span class="df-label">Description</span>
+                <input id="ongoing-desc-input" type="text" placeholder="Email &amp; task management">
+                <span class="df-label">Project (optional)</span>
+                <input id="ongoing-project-input" type="text" placeholder="ongoing">
+                <span class="df-label">Client (optional)</span>
+                <input id="ongoing-client-input" type="text" placeholder="">
+                <span class="df-label">Tags (comma-separated)</span>
+                <input id="ongoing-tags-input" type="text" placeholder="">
+                <div class="meeting-define-actions">
+                  <button class="btn btn-meeting-save" onclick="defineTemplate('ongoing')">Save</button>
+                  <button class="btn btn-cancel" onclick="toggleDefineForm('ongoing')">Cancel</button>
+                </div>
+                <div class="meeting-err" id="ongoing-err"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="meeting-wrap" id="meeting-wrap">
+          <button id="btn-meeting" class="btn btn-meeting" onclick="togglePanel('meeting')">&#128197; Meeting</button>
           <div id="meeting-drop" class="meeting-drop">
             <div class="meeting-drop-section">
               <div class="meeting-drop-label">Saved Meetings</div>
@@ -554,7 +587,7 @@ HTML = """<!DOCTYPE html>
               <div class="meeting-adhoc" id="meeting-adhoc-item" onclick="toggleAdhoc()">&#128203; Ad-hoc (use form above)</div>
             </div>
             <div class="meeting-drop-section">
-              <div class="meeting-define-toggle" onclick="toggleDefineForm()">&#43; Define New Meeting</div>
+              <div class="meeting-define-toggle" onclick="toggleDefineForm('meeting')">&#43; Define New Meeting</div>
               <div id="meeting-define-form" class="meeting-define-form">
                 <span class="df-label">Alias</span>
                 <input id="meeting-alias" type="text" placeholder="e.g. standup">
@@ -567,8 +600,8 @@ HTML = """<!DOCTYPE html>
                 <span class="df-label">Tags (comma-separated)</span>
                 <input id="meeting-tags-input" type="text" placeholder="team, recurring">
                 <div class="meeting-define-actions">
-                  <button class="btn btn-meeting-save" onclick="defineMeeting()">Save</button>
-                  <button class="btn btn-cancel" onclick="toggleDefineForm()">Cancel</button>
+                  <button class="btn btn-meeting-save" onclick="defineTemplate('meeting')">Save</button>
+                  <button class="btn btn-cancel" onclick="toggleDefineForm('meeting')">Cancel</button>
                 </div>
                 <div class="meeting-err" id="meeting-err"></div>
               </div>
@@ -623,7 +656,7 @@ HTML = """<!DOCTYPE html>
   var startedAt = null;
   var elapsedTimer = null;
   var isMeeting = false;
-  var meetingPanelOpen = false;
+  var openPanel = null;
   var currentTracking = null;
   var activityData = {};
   var editModalKey = null;
@@ -646,108 +679,111 @@ HTML = """<!DOCTYPE html>
     return Math.round((secs / totalSecs) * 100) + '%';
   }
 
-  function toggleMeetingPanel() {
-    meetingPanelOpen = !meetingPanelOpen;
-    var drop = document.getElementById('meeting-drop');
-    if (meetingPanelOpen) {
-      drop.classList.add('open');
-      loadMeetings();
-    } else {
-      drop.classList.remove('open');
-    }
+  var TEMPLATE_KINDS = {
+    meeting: {listUrl: '/api/meetings', apiBase: '/api/meeting', listKey: 'meetings', noun: 'meeting'},
+    ongoing: {listUrl: '/api/ongoing', apiBase: '/api/ongoing', listKey: 'ongoing', noun: 'ongoing item'}
+  };
+  var TEMPLATE_FIELDS = ['alias', 'desc-input', 'project-input', 'client-input', 'tags-input'];
+
+  function togglePanel(kind) {
+    var wasOpen = openPanel === kind;
+    closePanel();
+    if (wasOpen) return;
+    openPanel = kind;
+    document.getElementById(kind + '-drop').classList.add('open');
+    loadTemplates(kind);
   }
 
-  function closeMeetingPanel() {
-    meetingPanelOpen = false;
-    document.getElementById('meeting-drop').classList.remove('open');
+  function closePanel() {
+    if (!openPanel) return;
+    document.getElementById(openPanel + '-drop').classList.remove('open');
+    openPanel = null;
   }
 
   function toggleAdhoc() {
     isMeeting = !isMeeting;
     document.getElementById('btn-meeting').classList.toggle('on', isMeeting);
     document.getElementById('meeting-adhoc-item').classList.toggle('on', isMeeting);
-    closeMeetingPanel();
+    closePanel();
   }
 
-  function loadMeetings() {
-    fetch('/api/meetings').then(function(r){ return r.json(); }).then(function(data) {
-      var el = document.getElementById('meeting-list');
-      var meetings = data.meetings || [];
-      if (!meetings.length) {
-        el.innerHTML = '<div style="color:var(--muted);font-size:0.8rem;padding:5px 12px">No saved meetings</div>';
+  function postJson(url, payload) {
+    return fetch(url, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    }).then(function(r){ return r.json(); });
+  }
+
+  function emptyListMsg(text) {
+    return '<div style="color:var(--muted);font-size:0.8rem;padding:5px 12px">' + text + '</div>';
+  }
+
+  function loadTemplates(kind) {
+    var spec = TEMPLATE_KINDS[kind];
+    var el = document.getElementById(kind + '-list');
+    fetch(spec.listUrl).then(function(r){ return r.json(); }).then(function(data) {
+      var items = data[spec.listKey] || [];
+      if (!items.length) {
+        el.innerHTML = emptyListMsg('No saved ' + spec.noun + 's');
         return;
       }
       var html = '';
-      for (var i = 0; i < meetings.length; i++) {
-        var m = meetings[i];
+      for (var i = 0; i < items.length; i++) {
+        var t = items[i];
+        var attrs = ' data-kind="' + kind + '" data-alias="' + esc(t.alias) + '"';
         html += '<div class="meeting-item">' +
-          '<span class="meeting-item-name" data-alias="' + esc(m.alias) + '" onclick="startSavedMeeting(this.dataset.alias)">' + esc(m.alias) + '</span>' +
-          '<span class="meeting-item-desc" data-alias="' + esc(m.alias) + '" onclick="startSavedMeeting(this.dataset.alias)">' + esc(m.description) + '</span>' +
-          '<span class="meeting-item-del" data-alias="' + esc(m.alias) + '" onclick="undefineMeeting(this.dataset.alias)">&#215;</span>' +
+          '<span class="meeting-item-name"' + attrs + ' onclick="startTemplate(this.dataset.kind, this.dataset.alias)">' + esc(t.alias) + '</span>' +
+          '<span class="meeting-item-desc"' + attrs + ' onclick="startTemplate(this.dataset.kind, this.dataset.alias)">' + esc(t.description) + '</span>' +
+          '<span class="meeting-item-del"' + attrs + ' onclick="undefineTemplate(this.dataset.kind, this.dataset.alias)">&#215;</span>' +
           '</div>';
       }
       el.innerHTML = html;
     }).catch(function() {
-      document.getElementById('meeting-list').innerHTML = '<div style="color:var(--muted);font-size:0.8rem;padding:5px 12px">Failed to load</div>';
+      el.innerHTML = emptyListMsg('Failed to load');
     });
   }
 
-  function startSavedMeeting(alias) {
-    closeMeetingPanel();
-    fetch('/api/meeting/start', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({alias: alias})
-    }).then(function(r){ return r.json(); }).then(function(data) {
+  function startTemplate(kind, alias) {
+    closePanel();
+    postJson(TEMPLATE_KINDS[kind].apiBase + '/start', {alias: alias}).then(function(data) {
       if (data.success) {
         refreshStatus();
       } else {
-        document.getElementById('form-err').textContent = data.error || 'Failed to start meeting';
+        document.getElementById('form-err').textContent = data.error || 'Failed to start ' + TEMPLATE_KINDS[kind].noun;
       }
     }).catch(function() { document.getElementById('form-err').textContent = 'Network error'; });
   }
 
-  function undefineMeeting(alias) {
-    if (!confirm('Remove saved meeting "' + alias + '"?')) return;
-    fetch('/api/meeting/undefine', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({alias: alias})
-    }).then(function(r){ return r.json(); }).then(function(data) {
-      if (data.success) loadMeetings();
+  function undefineTemplate(kind, alias) {
+    if (!confirm('Remove saved ' + TEMPLATE_KINDS[kind].noun + ' "' + alias + '"?')) return;
+    postJson(TEMPLATE_KINDS[kind].apiBase + '/undefine', {alias: alias}).then(function(data) {
+      if (data.success) loadTemplates(kind);
     });
   }
 
-  function toggleDefineForm() {
-    var form = document.getElementById('meeting-define-form');
-    form.classList.toggle('open');
-    document.getElementById('meeting-err').textContent = '';
+  function toggleDefineForm(kind) {
+    document.getElementById(kind + '-define-form').classList.toggle('open');
+    document.getElementById(kind + '-err').textContent = '';
   }
 
-  function defineMeeting() {
-    var alias = document.getElementById('meeting-alias').value.trim();
-    var desc = document.getElementById('meeting-desc-input').value.trim();
-    var errEl = document.getElementById('meeting-err');
+  function defineTemplate(kind) {
+    function field(name) { return document.getElementById(kind + '-' + name); }
+    var alias = field('alias').value.trim();
+    var desc = field('desc-input').value.trim();
+    var errEl = field('err');
     if (!alias || !desc) { errEl.textContent = 'Alias and description are required'; return; }
-    fetch('/api/meeting/define', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        alias: alias,
-        description: desc,
-        project: document.getElementById('meeting-project-input').value.trim(),
-        client: document.getElementById('meeting-client-input').value.trim(),
-        tags: document.getElementById('meeting-tags-input').value.trim()
-      })
-    }).then(function(r){ return r.json(); }).then(function(data) {
+    postJson(TEMPLATE_KINDS[kind].apiBase + '/define', {
+      alias: alias,
+      description: desc,
+      project: field('project-input').value.trim(),
+      client: field('client-input').value.trim(),
+      tags: field('tags-input').value.trim()
+    }).then(function(data) {
       if (data.success) {
-        document.getElementById('meeting-alias').value = '';
-        document.getElementById('meeting-desc-input').value = '';
-        document.getElementById('meeting-project-input').value = '';
-        document.getElementById('meeting-client-input').value = '';
-        document.getElementById('meeting-tags-input').value = '';
-        document.getElementById('meeting-define-form').classList.remove('open');
-        loadMeetings();
+        TEMPLATE_FIELDS.forEach(function(name) { field(name).value = ''; });
+        field('define-form').classList.remove('open');
+        loadTemplates(kind);
       } else {
         errEl.textContent = data.error || 'Failed to save';
       }
@@ -791,6 +827,8 @@ HTML = """<!DOCTYPE html>
     var content = document.getElementById('current-content');
     clearInterval(elapsedTimer);
     elapsedTimer = null;
+    var onOngoing = !!(cur && (cur.todoist_task_id || '').indexOf('ongoing:') === 0);
+    document.getElementById('btn-ongoing').classList.toggle('on', onOngoing);
     if (!cur) {
       card.classList.remove('active');
       content.innerHTML = '<span class="idle">Not tracking</span>';
@@ -1595,8 +1633,7 @@ HTML = """<!DOCTYPE html>
   document.addEventListener('mousedown', function(e) {
     var wrap = document.querySelector('.task-wrap');
     if (wrap && !wrap.contains(e.target)) closeTaskDd();
-    var mwrap = document.querySelector('.meeting-wrap');
-    if (meetingPanelOpen && mwrap && !mwrap.contains(e.target)) closeMeetingPanel();
+    if (openPanel && !document.getElementById(openPanel + '-wrap').contains(e.target)) closePanel();
   });
 
   refreshStatus();
@@ -1702,7 +1739,7 @@ def _read_activities(days: int = 7) -> list[dict]:
                     continue
 
                 task_id = task_ids_by_start.get(started_at.isoformat(), "")
-                has_todoist_task = bool(task_id and not task_id.startswith(("meeting:", "cal:")))
+                has_todoist_task = is_real_todoist_task_id(task_id)
 
                 activities.append(
                     {
@@ -1871,7 +1908,7 @@ def _stop_active(tracking) -> None:
     stopped_at = datetime.now()
     db.update_tracking_record(tracking, stopped_at=stopped_at)
 
-    if tracking.todoist_task_id and not tracking.todoist_task_id.startswith("meeting:"):
+    if is_real_todoist_task_id(tracking.todoist_task_id):
         try:
             api = TodoistAPI()
             if tracking.started_at:
@@ -1962,6 +1999,11 @@ def _delete_bartib_line(original_started_at: str) -> bool:
     return True
 
 
+def _template_kind_from_path(path: str) -> str:
+    """Map '/api/<kind>/<action>' to the template kind ('meeting' or 'ongoing')."""
+    return path.split("/")[2]
+
+
 class TimeWebHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):  # noqa: A002
         pass
@@ -1981,7 +2023,9 @@ class TimeWebHandler(BaseHTTPRequestHandler):
             project_id = qs.get("project_id", [""])[0]
             self._handle_tasks(project_id)
         elif path == "/api/meetings":
-            self._handle_meetings_list()
+            self._handle_templates_list("meeting")
+        elif path == "/api/ongoing":
+            self._handle_templates_list("ongoing")
         elif path == "/api/calendar/events":
             date_str = parse_qs(parsed.query).get("date", [""])[0]
             self._handle_calendar_events(date_str)
@@ -2014,12 +2058,12 @@ class TimeWebHandler(BaseHTTPRequestHandler):
             self._handle_activity_note(body)
         elif path == "/api/complete":
             self._handle_complete()
-        elif path == "/api/meeting/start":
-            self._handle_meeting_start(body)
-        elif path == "/api/meeting/define":
-            self._handle_meeting_define(body)
-        elif path == "/api/meeting/undefine":
-            self._handle_meeting_undefine(body)
+        elif path in ("/api/meeting/start", "/api/ongoing/start"):
+            self._handle_template_start(_template_kind_from_path(path), body)
+        elif path in ("/api/meeting/define", "/api/ongoing/define"):
+            self._handle_template_define(_template_kind_from_path(path), body)
+        elif path in ("/api/meeting/undefine", "/api/ongoing/undefine"):
+            self._handle_template_undefine(_template_kind_from_path(path), body)
         elif path == "/api/calendar/log":
             self._handle_calendar_log(body)
         else:
@@ -2049,7 +2093,7 @@ class TimeWebHandler(BaseHTTPRequestHandler):
         if active and active.started_at:
             elapsed = int((datetime.now() - active.started_at).total_seconds())
             task_id = active.todoist_task_id or ""
-            has_todoist_task = bool(task_id and not task_id.startswith("meeting:"))
+            has_todoist_task = is_real_todoist_task_id(task_id)
             note_url = None
             if has_todoist_task:
                 mapping = db.get_todoist_note_by_task_id(task_id)
@@ -2285,7 +2329,7 @@ class TimeWebHandler(BaseHTTPRequestHandler):
                         orig_dt + timedelta(seconds=30),
                     )
                     for r in records:
-                        if r.todoist_task_id and not r.todoist_task_id.startswith("meeting:"):
+                        if is_real_todoist_task_id(r.todoist_task_id):
                             todoist_task_id = r.todoist_task_id
                             break
 
@@ -2303,11 +2347,7 @@ class TimeWebHandler(BaseHTTPRequestHandler):
 
     def _handle_note_create(self):
         active = db.get_active_tracking()
-        if (
-            not active
-            or not active.todoist_task_id
-            or active.todoist_task_id.startswith("meeting:")
-        ):
+        if not active or not is_real_todoist_task_id(active.todoist_task_id):
             self._send_json({"success": False, "error": "No active Todoist task"}, 400)
             return
         try:
@@ -2318,7 +2358,7 @@ class TimeWebHandler(BaseHTTPRequestHandler):
 
     def _handle_activity_note(self, body: dict):
         task_id = body.get("todoist_task_id", "").strip()
-        if not task_id or task_id.startswith(("meeting:", "cal:")):
+        if not is_real_todoist_task_id(task_id):
             self._send_json({"success": False, "error": "No linked Todoist task"}, 400)
             return
         try:
@@ -2333,7 +2373,7 @@ class TimeWebHandler(BaseHTTPRequestHandler):
             self._send_json({"success": False, "error": "No active tracking"}, 400)
             return
         task_id = active.todoist_task_id or ""
-        if not task_id or task_id.startswith("meeting:"):
+        if not is_real_todoist_task_id(task_id):
             self._send_json({"success": False, "error": "No active Todoist task"}, 400)
             return
         try:
@@ -2370,42 +2410,43 @@ class TimeWebHandler(BaseHTTPRequestHandler):
         except Exception as e:
             self._send_json({"success": False, "error": str(e)}, 500)
 
-    def _handle_meetings_list(self):
+    def _handle_templates_list(self, kind: str):
+        from .config import TEMPLATE_KINDS
         from .config import config as config_manager
 
-        meetings = config_manager.get_meetings()
-        usage = config_manager.get_meeting_usage()
+        templates = config_manager.get_templates(kind)
+        usage = config_manager.get_template_usage(kind)
         ordered = sorted(
-            [{"alias": alias, **defn} for alias, defn in meetings.items()],
-            key=lambda m: usage.get(m["alias"], 0),
+            [{"alias": alias, **defn} for alias, defn in templates.items()],
+            key=lambda t: usage.get(t["alias"], 0),
             reverse=True,
         )
-        self._send_json({"meetings": ordered})
+        self._send_json({TEMPLATE_KINDS[kind].config_key: ordered})
 
-    def _handle_meeting_start(self, body: dict):
+    def _handle_template_start(self, kind: str, body: dict):
         try:
             alias = body.get("alias", "").strip()
             if not alias:
                 self._send_json({"success": False, "error": "Alias required"}, 400)
                 return
+            from .config import TEMPLATE_KINDS
             from .config import config as config_manager
 
-            definition = config_manager.get_meetings().get(alias)
+            spec = TEMPLATE_KINDS[kind]
+            definition = config_manager.get_templates(kind).get(alias)
             if not definition:
-                self._send_json({"success": False, "error": f"No meeting named '{alias}'"}, 404)
+                self._send_json({"success": False, "error": f"No {spec.noun} named '{alias}'"}, 404)
                 return
 
-            description = definition["description"]
-            project = definition.get("project") or "meetings"
-            client = definition.get("client", "")
+            project = definition.get("project") or spec.default_project
+            bartib_project = _build_bartib_project(project, definition.get("client", ""))
             tags = list(definition.get("tags", []))
-            if "meeting" not in tags:
-                tags.append("meeting")
-            bartib_project = _build_bartib_project(project, client)
+            if spec.tag not in tags:
+                tags.append(spec.tag)
 
             from .main import append_tags_to_description
 
-            description = append_tags_to_description(description, tags)
+            description = append_tags_to_description(definition["description"], tags)
 
             active = db.get_active_tracking()
             if active:
@@ -2415,17 +2456,17 @@ class TimeWebHandler(BaseHTTPRequestHandler):
             bartib = BartibIntegration()
             bartib.start_tracking(description=description, project=bartib_project)
             db.create_tracking_record(
-                todoist_task_id=f"meeting:{slug}",
+                todoist_task_id=f"{kind}:{slug}",
                 project_name=bartib_project,
                 task_name=description,
                 started_at=datetime.now(),
             )
-            config_manager.increment_meeting_usage(alias)
+            config_manager.increment_template_usage(kind, alias)
             self._send_json({"success": True, "project": bartib_project})
         except Exception as e:
             self._send_json({"success": False, "error": str(e)}, 500)
 
-    def _handle_meeting_define(self, body: dict):
+    def _handle_template_define(self, kind: str, body: dict):
         try:
             alias = body.get("alias", "").strip()
             description = body.get("description", "").strip()
@@ -2440,25 +2481,32 @@ class TimeWebHandler(BaseHTTPRequestHandler):
             tags = [t.strip() for t in tags_raw.split(",") if t.strip()] if tags_raw else []
             from .config import config as config_manager
 
-            config_manager.set_meeting(
-                alias=alias, description=description, project=project, client=client, tags=tags
+            config_manager.set_template(
+                kind,
+                alias=alias,
+                description=description,
+                project=project,
+                client=client,
+                tags=tags,
             )
             self._send_json({"success": True})
         except Exception as e:
             self._send_json({"success": False, "error": str(e)}, 500)
 
-    def _handle_meeting_undefine(self, body: dict):
+    def _handle_template_undefine(self, kind: str, body: dict):
         try:
             alias = body.get("alias", "").strip()
             if not alias:
                 self._send_json({"success": False, "error": "Alias required"}, 400)
                 return
+            from .config import TEMPLATE_KINDS
             from .config import config as config_manager
 
-            if config_manager.delete_meeting(alias):
+            if config_manager.delete_template(kind, alias):
                 self._send_json({"success": True})
             else:
-                self._send_json({"success": False, "error": f"No meeting named '{alias}'"}, 404)
+                noun = TEMPLATE_KINDS[kind].noun
+                self._send_json({"success": False, "error": f"No {noun} named '{alias}'"}, 404)
         except Exception as e:
             self._send_json({"success": False, "error": str(e)}, 500)
 
