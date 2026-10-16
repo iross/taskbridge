@@ -210,3 +210,66 @@ class TestGetOrCreateTaskNote:
 
         with pytest.raises(ValueError, match="Task not found"):
             web_ui._get_or_create_task_note("task-missing")
+
+
+class TestKnownTags:
+    """Tests for the tag list backing the start-form/edit-modal tag picker."""
+
+    @pytest.fixture
+    def tag_colors(self, monkeypatch):
+        cfg = MagicMock()
+        cfg.get_tag_colors.return_value = {}
+        monkeypatch.setattr("taskbridge.config.config", cfg)
+        return cfg.get_tag_colors
+
+    def _log(self, tmp_path, monkeypatch, lines):
+        path = tmp_path / "activities.bartib"
+        path.write_text("\n".join(lines) + "\n")
+        monkeypatch.setenv("BARTIB_FILE", str(path))
+
+    def test_counts_tags_across_whole_log_most_used_first(self, tmp_path, monkeypatch, tag_colors):
+        self._log(
+            tmp_path,
+            monkeypatch,
+            [
+                "# February 2026",
+                "2025-01-02 09:00 - 2025-01-02 09:30 | CHTC | Old standup #meeting",
+                "2026-10-15 09:00 - 2026-10-15 09:30 | CHTC | Standup #meeting #meeting",
+                "2026-10-15 10:00 - 2026-10-15 11:00 | CHTC | GPU report #reporting #k8s",
+                "2026-10-15 11:00 | CHTC | Cluster work #k8s",
+                "not a bartib line",
+            ],
+        )
+
+        assert web_ui._known_tags() == ["k8s", "meeting", "reporting"]
+        assert web_ui._read_tag_counts() == {"meeting": 2, "reporting": 1, "k8s": 2}
+
+    def test_lone_hash_is_not_a_tag(self, tmp_path, monkeypatch, tag_colors):
+        self._log(tmp_path, monkeypatch, ["2026-10-15 09:00 | CHTC | Fix issue # 12"])
+
+        assert web_ui._known_tags() == []
+
+    def test_includes_color_only_tags_without_duplicating_case(
+        self, tmp_path, monkeypatch, tag_colors
+    ):
+        self._log(tmp_path, monkeypatch, ["2026-10-15 09:00 | CHTC | GPU work #GPUs"])
+        tag_colors.return_value = {"gpus": "#ff0000", "admin": "#00ff00"}
+
+        assert web_ui._known_tags() == ["GPUs", "admin"]
+
+    def test_no_bartib_file_configured(self, monkeypatch, tag_colors):
+        monkeypatch.delenv("BARTIB_FILE", raising=False)
+
+        assert web_ui._known_tags() == []
+
+    def test_unreadable_log_returns_error_response(self, tmp_path, monkeypatch, tag_colors):
+        monkeypatch.setenv("BARTIB_FILE", str(tmp_path / "missing.bartib"))
+        handler = web_ui.TimeWebHandler.__new__(web_ui.TimeWebHandler)
+        handler._send_json = MagicMock()
+
+        handler._handle_tags()
+
+        payload, status = handler._send_json.call_args.args
+        assert status == 500
+        assert payload["tags"] == []
+        assert "Could not read bartib log" in payload["error"]

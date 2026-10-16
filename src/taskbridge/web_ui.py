@@ -189,6 +189,12 @@ HTML = """<!DOCTYPE html>
       border: 1px solid var(--border); background: var(--active-bg); vertical-align: 1px;
     }
     .act-desc .tag-chip, .current-desc .tag-chip { margin-left: 6px; }
+    .tag-picker { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+    .tag-picker:empty { display: none; }
+    .edit-grid .tag-picker { grid-column: 1 / -1; margin-top: 0; }
+    .tag-pick { font-family: inherit; cursor: pointer; opacity: 0.5; }
+    .tag-pick:hover { opacity: 0.8; }
+    .tag-pick.on { opacity: 1; font-weight: 600; }
     .activity.running .act-time { color: var(--accent); }
     .activity.running .act-dur { color: var(--accent); }
     .edit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
@@ -533,6 +539,7 @@ HTML = """<!DOCTYPE html>
       <label for="description">Description</label>
       <input id="description" type="text" list="desc-list" placeholder="What are you working on?">
       <datalist id="desc-list"></datalist>
+      <div id="description-tags" class="tag-picker" data-for="description"></div>
     </div>
     <div class="form-time-row">
       <div>
@@ -935,17 +942,57 @@ HTML = """<!DOCTYPE html>
     return CLIENT_PALETTE[h % CLIENT_PALETTE.length];
   }
 
+  function chipStyle(tag) {
+    var c = tagColor(tag);
+    return 'background:color-mix(in srgb, ' + c + ' 16%, transparent);' +
+      'border-color:color-mix(in srgb, ' + c + ' 50%, transparent);' +
+      'color:color-mix(in srgb, ' + c + ' 60%, var(--text))';
+  }
+
   function tagChips(tags) {
     var html = '';
     for (var i = 0; i < tags.length; i++) {
-      var c = tagColor(tags[i]);
-      html += '<span class="tag-chip" style="' +
-        'background:color-mix(in srgb, ' + c + ' 16%, transparent);' +
-        'border-color:color-mix(in srgb, ' + c + ' 50%, transparent);' +
-        'color:color-mix(in srgb, ' + c + ' 60%, var(--text))">' +
-        esc(tags[i]) + '</span>';
+      html += '<span class="tag-chip" style="' + chipStyle(tags[i]) + '">' + esc(tags[i]) + '</span>';
     }
     return html;
+  }
+
+  var knownTags = [];
+
+  function loadTags() {
+    fetch('/api/tags').then(function(r){ return r.json(); }).then(function(data) {
+      knownTags = data.tags || [];
+      if (data.error) console.warn(data.error);
+      renderTagPicker('description');
+      renderTagPicker('em-description');
+    }).catch(function(e) { console.warn('Failed to load tags', e); });
+  }
+
+  function renderTagPicker(inputId) {
+    var box = document.getElementById(inputId + '-tags');
+    var input = document.getElementById(inputId);
+    if (!box || !input) return;
+    var present = parseTags(input.value).tags;
+    var html = '';
+    for (var i = 0; i < knownTags.length; i++) {
+      var tag = knownTags[i];
+      var on = present.indexOf(tag) >= 0 ? ' on' : '';
+      html += '<button type="button" class="tag-chip tag-pick' + on + '" style="' + chipStyle(tag) + '"' +
+        ' data-tag="' + esc(tag) + '" onmousedown="event.preventDefault()"' +
+        ' onclick="toggleTagIn(this.parentNode.dataset.for, this.dataset.tag)">' + esc(tag) + '</button>';
+    }
+    box.innerHTML = html;
+  }
+
+  function toggleTagIn(inputId, tag) {
+    var input = document.getElementById(inputId);
+    var token = '#' + tag;
+    var words = input.value.split(' ').filter(function(w) { return w; });
+    var idx = words.indexOf(token);
+    if (idx >= 0) words.splice(idx, 1);
+    else words.push(token);
+    input.value = words.join(' ');
+    renderTagPicker(inputId);
   }
 
   function renderActivities(acts) {
@@ -1098,6 +1145,7 @@ HTML = """<!DOCTYPE html>
     var editOpen = document.getElementById('edit-modal').classList.contains('open');
     fetch('/api/status').then(function(r){ return r.json(); }).then(function(data) {
       tagColors = data.tag_colors || {};
+      renderTagPicker('description');
       renderCurrent(data.current);
       renderReport(data.activities);
       if (!editOpen) renderActivities(data.activities);
@@ -1326,6 +1374,7 @@ HTML = """<!DOCTYPE html>
           document.getElementById('task-id').value = '';
           document.getElementById('time-from').value = '';
           document.getElementById('time-to').value = '';
+          loadTags();
           isMeeting = false;
           document.getElementById('btn-meeting').classList.remove('on');
           document.getElementById('meeting-adhoc-item').classList.remove('on');
@@ -1382,7 +1431,9 @@ HTML = """<!DOCTYPE html>
         esc(a.started_at.slice(0,16)) + '"></div>' +
       stopField +
       '<div><label>Project</label><input type="text" id="em-project" value="' + esc(a.project) + '"></div>' +
-      '<div><label>Description</label><input type="text" id="em-description" value="' + esc(a.description) + '"></div>';
+      '<div><label>Description</label><input type="text" id="em-description" oninput="renderTagPicker(this.id)" value="' + esc(a.description) + '"></div>' +
+      '<div id="em-description-tags" class="tag-picker" data-for="em-description"></div>';
+    renderTagPicker('em-description');
     var resumeBtn = document.getElementById('edit-modal-resume');
     resumeBtn.style.display = a.active ? 'none' : '';
     var noteEl = document.getElementById('edit-modal-note');
@@ -1439,7 +1490,7 @@ HTML = """<!DOCTYPE html>
     };
     fetch('/api/activity/edit', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
       .then(function(r){ return r.json(); }).then(function(data) {
-        if (data.success) { closeEditModal(); refreshStatus(); }
+        if (data.success) { closeEditModal(); refreshStatus(); loadTags(); }
         else { errEl.textContent = data.error || 'Save failed'; }
       }).catch(function() { errEl.textContent = 'Network error'; });
   }
@@ -1630,6 +1681,7 @@ HTML = """<!DOCTYPE html>
   });
   document.getElementById('task-search').addEventListener('keydown', onTaskKeydown);
   document.getElementById('btn-add-task').addEventListener('click', addTask);
+  document.getElementById('description').addEventListener('input', function() { renderTagPicker('description'); });
   document.addEventListener('mousedown', function(e) {
     var wrap = document.querySelector('.task-wrap');
     if (wrap && !wrap.contains(e.target)) closeTaskDd();
@@ -1637,6 +1689,7 @@ HTML = """<!DOCTYPE html>
   });
 
   refreshStatus();
+  loadTags();
   loadProjects();
   setInterval(refreshStatus, 10000);
 </script>
@@ -1699,6 +1752,36 @@ def _tracking_task_ids(cutoff: datetime) -> dict[str, str]:
         for r in records
         if r.started_at and r.todoist_task_id
     }
+
+
+def _read_tag_counts() -> dict[str, int]:
+    """Count #tag usage across every entry in the bartib log."""
+    from .main import split_description_tags
+
+    bartib_file = os.environ.get("BARTIB_FILE", "")
+    if not bartib_file:
+        return {}
+
+    counts: dict[str, int] = {}
+    with open(bartib_file) as f:
+        for line in f:
+            parts = line.strip().split(" | ", 2)
+            if len(parts) != 3:
+                continue
+            for tag in split_description_tags(parts[2])[1]:
+                counts[tag] = counts.get(tag, 0) + 1
+    return counts
+
+
+def _known_tags() -> list[str]:
+    """Tags from the bartib log plus configured tag colors, most-used first."""
+    from .config import config as config_manager
+
+    counts = _read_tag_counts()
+    for tag in config_manager.get_tag_colors():
+        if not any(t.lower() == tag for t in counts):
+            counts[tag] = 0
+    return sorted(counts, key=lambda t: (-counts[t], t.lower()))
 
 
 def _read_activities(days: int = 7) -> list[dict]:
@@ -2026,6 +2109,8 @@ class TimeWebHandler(BaseHTTPRequestHandler):
             self._handle_templates_list("meeting")
         elif path == "/api/ongoing":
             self._handle_templates_list("ongoing")
+        elif path == "/api/tags":
+            self._handle_tags()
         elif path == "/api/calendar/events":
             date_str = parse_qs(parsed.query).get("date", [""])[0]
             self._handle_calendar_events(date_str)
@@ -2409,6 +2494,12 @@ class TimeWebHandler(BaseHTTPRequestHandler):
             self._send_json({"success": True})
         except Exception as e:
             self._send_json({"success": False, "error": str(e)}, 500)
+
+    def _handle_tags(self):
+        try:
+            self._send_json({"tags": _known_tags()})
+        except OSError as e:
+            self._send_json({"tags": [], "error": f"Could not read bartib log: {e}"}, 500)
 
     def _handle_templates_list(self, kind: str):
         from .config import TEMPLATE_KINDS
