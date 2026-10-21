@@ -1079,7 +1079,7 @@ HTML = """<!DOCTYPE html>
   function activityMatches(a, state) {
     var hl = JSON.parse(state.hl);
     var start = new Date(a.started_at);
-    if (state.scope === 'day' && start.toDateString() !== state.dayKey) return false;
+    if (state.scope === 'day' && state.dayKey && start.toDateString() !== state.dayKey) return false;
     if (state.scope === 'week' && start < startOfWeek()) return false;
     var pd = parseTags(a.description);
     if (hl[0] === 'tag') return pd.tags.indexOf(hl[1]) >= 0;
@@ -1094,6 +1094,12 @@ HTML = """<!DOCTYPE html>
     if (!row) return null;
     var scope = row.closest('[data-scope]').getAttribute('data-scope');
     return {hl: row.getAttribute('data-hl'), scope: scope, dayKey: scope === 'day' ? lastReportDayKey : null};
+  }
+
+  function pinState(row) {
+    var state = hlState(row);
+    if (state && state.scope === 'day') state.dayKey = null;
+    return state;
   }
 
   function sameState(x, y) {
@@ -1111,7 +1117,7 @@ HTML = """<!DOCTYPE html>
     }
     var rows = document.querySelectorAll('#daily-report [data-hl]');
     for (var j = 0; j < rows.length; j++) {
-      rows[j].classList.toggle('hl-pinned', !!reportPin && sameState(hlState(rows[j]), reportPin));
+      rows[j].classList.toggle('hl-pinned', !!reportPin && sameState(pinState(rows[j]), reportPin));
     }
   }
 
@@ -1135,7 +1141,7 @@ HTML = """<!DOCTYPE html>
     });
     panel.addEventListener('click', function(e) {
       if (e.target.closest('.report-toggle')) return;
-      var next = hlState(e.target.closest('[data-hl]'));
+      var next = pinState(e.target.closest('[data-hl]'));
       reportPin = next && !sameState(next, reportPin) ? next : null;
       applyReportHover();
     });
