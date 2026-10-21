@@ -1143,6 +1143,10 @@ HTML = """<!DOCTYPE html>
       var wrap = e.target.closest('.activity-wrap');
       if (wrap && wrap.classList.contains('hl')) clearReportPin();
     });
+    document.addEventListener('click', function(e) {
+      if (e.target.closest('#daily-report, #activities, #edit-modal, #cal-modal')) return;
+      clearReportPin();
+    });
   }
 
   function setupDayObserver() {
@@ -1691,7 +1695,7 @@ HTML = """<!DOCTYPE html>
   }
 
   document.addEventListener('keydown', function(e) {
-    if (e.key === 'Escape') { closeCalModal(); clearReportPin(); }
+    if (e.key === 'Escape') closeCalModal();
   });
 
   document.getElementById('project-select').addEventListener('change', onProjectChange);
