@@ -222,6 +222,7 @@ HTML = """<!DOCTYPE html>
       border-bottom: 1px solid var(--border); margin-bottom: 10px;
       display: flex; align-items: baseline; justify-content: space-between;
     }
+    .report-week-heading { margin-top: 22px; }
     .report-heading-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .report-toggle {
       cursor: pointer; user-select: none; flex-shrink: 0; margin-left: 8px;
@@ -966,73 +967,84 @@ HTML = """<!DOCTYPE html>
   }
 
   function reportToggleHtml() {
-    return '<span class="report-toggle' + (reportPercentMode ? ' on' : '') + '" onclick="toggleReportPercent()" title="Toggle between time and % of day">' +
+    return '<span class="report-toggle' + (reportPercentMode ? ' on' : '') + '" onclick="toggleReportPercent()" title="Toggle between time and % of total">' +
       (reportPercentMode ? '%' : '⏱') + '</span>';
   }
 
-  function renderReport(acts, dayKey) {
-    if (!dayKey) dayKey = new Date().toDateString();
-    lastReportDayKey = dayKey;
-    var panel = document.getElementById('daily-report');
-    var dayActs = acts.filter(function(a) { return new Date(a.started_at).toDateString() === dayKey; });
-    var label = dayLabels[dayKey] || dayKey;
-    if (!dayActs.length) {
-      panel.innerHTML = '<div class="report-heading"><span class="report-heading-label">' + esc(label) + '</span>' +
-        reportToggleHtml() + '</div><div class="report-empty">No entries.</div>';
-      return;
-    }
-    var clients = {};
-    var clientOrder = [];
-    var labels = {};
-    var labelOrder = [];
-    var totalSecs = 0;
-    for (var i = 0; i < dayActs.length; i++) {
-      var a = dayActs[i];
+  function startOfWeek() {
+    var d = new Date();
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+    return d;
+  }
+
+  function aggregateReport(acts) {
+    var agg = {clients: {}, clientOrder: [], labels: {}, labelOrder: [], totalSecs: 0};
+    for (var i = 0; i < acts.length; i++) {
+      var a = acts[i];
       var segs = a.project.split('::');
       var client = segs[0] || a.project;
       var proj = segs.length > 1 ? segs[1] : '—';
       var secs = a.duration_seconds || 0;
       var pd = parseTags(a.description);
-      totalSecs += secs;
-      if (!clients[client]) { clients[client] = {total: 0, projects: {}, projOrder: []}; clientOrder.push(client); }
-      clients[client].total += secs;
-      if (!clients[client].projects[proj]) { clients[client].projects[proj] = {total: 0, descs: []}; clients[client].projOrder.push(proj); }
-      clients[client].projects[proj].total += secs;
-      if (pd.text && clients[client].projects[proj].descs.indexOf(pd.text) < 0) {
-        clients[client].projects[proj].descs.push(pd.text);
-      }
+      agg.totalSecs += secs;
+      if (!agg.clients[client]) { agg.clients[client] = {total: 0, projects: {}, projOrder: []}; agg.clientOrder.push(client); }
+      var c = agg.clients[client];
+      c.total += secs;
+      if (!c.projects[proj]) { c.projects[proj] = {total: 0, descs: []}; c.projOrder.push(proj); }
+      c.projects[proj].total += secs;
+      if (pd.text && c.projects[proj].descs.indexOf(pd.text) < 0) c.projects[proj].descs.push(pd.text);
       for (var li = 0; li < pd.tags.length; li++) {
         var lbl = pd.tags[li];
-        if (!labels[lbl]) { labels[lbl] = 0; labelOrder.push(lbl); }
-        labels[lbl] += secs;
+        if (!agg.labels[lbl]) { agg.labels[lbl] = 0; agg.labelOrder.push(lbl); }
+        agg.labels[lbl] += secs;
       }
     }
-    var html = '<div class="report-heading"><span class="report-heading-label">' + esc(label) +
-      ' &nbsp; ' + fmtDur(totalSecs) + '</span>' + reportToggleHtml() + '</div>';
-    for (var ci = 0; ci < clientOrder.length; ci++) {
-      var cname = clientOrder[ci];
-      var c = clients[cname];
+    return agg;
+  }
+
+  function reportSectionHtml(label, acts, opts) {
+    var heading = '<div class="report-heading' + (opts.extraClass || '') + '"><span class="report-heading-label">' + esc(label);
+    var tail = (opts.withToggle ? reportToggleHtml() : '') + '</div>';
+    if (!acts.length) return heading + '</span>' + tail + '<div class="report-empty">No entries.</div>';
+    var agg = aggregateReport(acts);
+    var total = agg.totalSecs;
+    var html = heading + ' &nbsp; ' + fmtDur(total) + '</span>' + tail;
+    for (var ci = 0; ci < agg.clientOrder.length; ci++) {
+      var cname = agg.clientOrder[ci];
+      var c = agg.clients[cname];
       html += '<div class="report-client-row" style="color:' + clientColor(cname + '::x') + '">' +
-        esc(cname) + '<span class="report-client-dur">' + fmtAmount(c.total, totalSecs) + '</span></div>';
+        esc(cname) + '<span class="report-client-dur">' + fmtAmount(c.total, total) + '</span></div>';
       for (var pi = 0; pi < c.projOrder.length; pi++) {
         var pname = c.projOrder[pi];
         var p = c.projects[pname];
         html += '<div class="report-proj-row"><span>' + esc(pname.replace(/-/g, ' ')) + '</span>' +
-          '<span class="report-proj-dur">' + fmtAmount(p.total, totalSecs) + '</span></div>';
-        if (p.descs.length) {
+          '<span class="report-proj-dur">' + fmtAmount(p.total, total) + '</span></div>';
+        if (opts.showDescs && p.descs.length) {
           html += '<div class="report-descs">' + esc(p.descs.join(', ')) + '</div>';
         }
       }
     }
-    if (labelOrder.length) {
+    if (agg.labelOrder.length) {
       html += '<hr class="report-sep">';
-      for (var li = 0; li < labelOrder.length; li++) {
-        var lbl = labelOrder[li];
+      for (var li = 0; li < agg.labelOrder.length; li++) {
+        var lbl = agg.labelOrder[li];
         html += '<div class="report-label-row"><span>' + tagChips([lbl]) + '</span>' +
-          '<span class="report-proj-dur">' + fmtAmount(labels[lbl], totalSecs) + '</span></div>';
+          '<span class="report-proj-dur">' + fmtAmount(agg.labels[lbl], total) + '</span></div>';
       }
     }
-    panel.innerHTML = html;
+    return html;
+  }
+
+  function renderReport(acts, dayKey) {
+    if (!dayKey) dayKey = new Date().toDateString();
+    lastReportDayKey = dayKey;
+    var dayActs = acts.filter(function(a) { return new Date(a.started_at).toDateString() === dayKey; });
+    var weekStart = startOfWeek();
+    var weekActs = acts.filter(function(a) { return new Date(a.started_at) >= weekStart; });
+    document.getElementById('daily-report').innerHTML =
+      reportSectionHtml(dayLabels[dayKey] || dayKey, dayActs, {withToggle: true, showDescs: true}) +
+      reportSectionHtml('This Week', weekActs, {extraClass: ' report-week-heading'});
   }
 
   function setupDayObserver() {
