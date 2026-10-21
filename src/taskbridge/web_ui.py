@@ -226,8 +226,10 @@ HTML = """<!DOCTYPE html>
       display: flex; align-items: baseline; justify-content: space-between;
     }
     .report-week-heading { margin-top: 22px; }
-    [data-hl] { cursor: default; border-radius: 3px; }
+    [data-hl] { border-radius: 3px; }
     [data-hl]:hover { background: rgba(128,128,128,0.08); }
+    [data-hl] { cursor: pointer; }
+    [data-hl].hl-pinned { background: color-mix(in srgb, var(--accent) 18%, transparent); }
     .report-heading-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .report-toggle {
       cursor: pointer; user-select: none; flex-shrink: 0; margin-left: 8px;
@@ -638,6 +640,7 @@ HTML = """<!DOCTYPE html>
   var visibleDays = new Set();
   var lastReportDayKey = null;
   var reportHover = null;
+  var reportPin = null;
   var reportPercentMode = false;
   try { reportPercentMode = localStorage.getItem('reportPercentMode') === '1'; } catch (e) {}
 
@@ -1015,8 +1018,15 @@ HTML = """<!DOCTYPE html>
     return agg;
   }
 
-  function hlAttr(kind, a, b) {
-    return ' data-hl="' + esc(JSON.stringify([kind, a, b || ''])) + '"';
+  function hlAttr(parts) {
+    return ' data-hl="' + esc(JSON.stringify(parts)) + '"';
+  }
+
+  function descsHtml(cname, pname, descs) {
+    var spans = descs.map(function(d) {
+      return '<span' + hlAttr(['desc', cname, pname, d]) + '>' + esc(d) + '</span>';
+    });
+    return '<div class="report-descs">' + spans.join(', ') + '</div>';
   }
 
   function reportSectionHtml(label, acts, opts) {
@@ -1029,15 +1039,15 @@ HTML = """<!DOCTYPE html>
     for (var ci = 0; ci < agg.clientOrder.length; ci++) {
       var cname = agg.clientOrder[ci];
       var c = agg.clients[cname];
-      html += '<div class="report-client-row"' + hlAttr('client', cname) + ' style="color:' + clientColor(cname + '::x') + '">' +
+      html += '<div class="report-client-row"' + hlAttr(['client', cname]) + ' style="color:' + clientColor(cname + '::x') + '">' +
         esc(cname) + '<span class="report-client-dur">' + fmtAmount(c.total, total) + '</span></div>';
       for (var pi = 0; pi < c.projOrder.length; pi++) {
         var pname = c.projOrder[pi];
         var p = c.projects[pname];
-        html += '<div class="report-proj-row"' + hlAttr('proj', cname, pname) + '><span>' + esc(pname.replace(/-/g, ' ')) + '</span>' +
+        html += '<div class="report-proj-row"' + hlAttr(['proj', cname, pname]) + '><span>' + esc(pname.replace(/-/g, ' ')) + '</span>' +
           '<span class="report-proj-dur">' + fmtAmount(p.total, total) + '</span></div>';
         if (opts.showDescs && p.descs.length) {
-          html += '<div class="report-descs">' + esc(p.descs.join(', ')) + '</div>';
+          html += descsHtml(cname, pname, p.descs);
         }
       }
     }
@@ -1045,7 +1055,7 @@ HTML = """<!DOCTYPE html>
       html += '<hr class="report-sep">';
       for (var li = 0; li < agg.labelOrder.length; li++) {
         var lbl = agg.labelOrder[li];
-        html += '<div class="report-label-row"' + hlAttr('tag', lbl) + '><span>' + tagChips([lbl]) + '</span>' +
+        html += '<div class="report-label-row"' + hlAttr(['tag', lbl]) + '><span>' + tagChips([lbl]) + '</span>' +
           '<span class="report-proj-dur">' + fmtAmount(agg.labels[lbl], total) + '</span></div>';
       }
     }
@@ -1063,40 +1073,75 @@ HTML = """<!DOCTYPE html>
       reportSectionHtml(dayLabels[dayKey] || dayKey, dayActs, {withToggle: true, showDescs: true}) +
       '</div><div data-scope="week">' +
       reportSectionHtml('This Week', weekActs, {extraClass: ' report-week-heading'}) + '</div>';
+    applyReportHover();
   }
 
-  function activityMatches(a, hl, scope) {
-    if (scope === 'day' && new Date(a.started_at).toDateString() !== lastReportDayKey) return false;
-    if (scope === 'week' && new Date(a.started_at) < startOfWeek()) return false;
-    if (hl[0] === 'tag') return parseTags(a.description).tags.indexOf(hl[1]) >= 0;
+  function activityMatches(a, state) {
+    var hl = JSON.parse(state.hl);
+    var start = new Date(a.started_at);
+    if (state.scope === 'day' && start.toDateString() !== state.dayKey) return false;
+    if (state.scope === 'week' && start < startOfWeek()) return false;
+    var pd = parseTags(a.description);
+    if (hl[0] === 'tag') return pd.tags.indexOf(hl[1]) >= 0;
     var keys = reportKeys(a);
     if (keys.client !== hl[1]) return false;
-    return hl[0] === 'client' || keys.proj === hl[2];
+    if (hl[0] === 'client') return true;
+    if (keys.proj !== hl[2]) return false;
+    return hl[0] === 'proj' || pd.text === hl[3];
+  }
+
+  function hlState(row) {
+    if (!row) return null;
+    var scope = row.closest('[data-scope]').getAttribute('data-scope');
+    return {hl: row.getAttribute('data-hl'), scope: scope, dayKey: scope === 'day' ? lastReportDayKey : null};
+  }
+
+  function sameState(x, y) {
+    return JSON.stringify(x) === JSON.stringify(y);
   }
 
   function applyReportHover() {
+    var state = reportPin || reportHover;
     var list = document.getElementById('activities');
     var wraps = list.querySelectorAll('.activity-wrap[data-start]');
-    var hl = reportHover ? JSON.parse(reportHover.hl) : null;
-    list.classList.toggle('hl-active', !!hl);
+    list.classList.toggle('hl-active', !!state);
     for (var i = 0; i < wraps.length; i++) {
       var a = activityData[wraps[i].getAttribute('data-start')];
-      wraps[i].classList.toggle('hl', !!(hl && a && activityMatches(a, hl, reportHover.scope)));
+      wraps[i].classList.toggle('hl', !!(state && a && activityMatches(a, state)));
     }
+    var rows = document.querySelectorAll('#daily-report [data-hl]');
+    for (var j = 0; j < rows.length; j++) {
+      rows[j].classList.toggle('hl-pinned', !!reportPin && sameState(hlState(rows[j]), reportPin));
+    }
+  }
+
+  function clearReportPin() {
+    if (!reportPin) return;
+    reportPin = null;
+    applyReportHover();
   }
 
   function setupReportHover() {
     var panel = document.getElementById('daily-report');
     panel.addEventListener('mouseover', function(e) {
-      var row = e.target.closest('[data-hl]');
-      var next = row ? {hl: row.getAttribute('data-hl'), scope: row.closest('[data-scope]').getAttribute('data-scope')} : null;
-      if (JSON.stringify(next) === JSON.stringify(reportHover)) return;
+      var next = hlState(e.target.closest('[data-hl]'));
+      if (sameState(next, reportHover)) return;
       reportHover = next;
       applyReportHover();
     });
     panel.addEventListener('mouseleave', function() {
       reportHover = null;
       applyReportHover();
+    });
+    panel.addEventListener('click', function(e) {
+      if (e.target.closest('.report-toggle')) return;
+      var next = hlState(e.target.closest('[data-hl]'));
+      reportPin = next && !sameState(next, reportPin) ? next : null;
+      applyReportHover();
+    });
+    document.getElementById('activities').addEventListener('click', function(e) {
+      var wrap = e.target.closest('.activity-wrap');
+      if (wrap && wrap.classList.contains('hl')) clearReportPin();
     });
   }
 
@@ -1646,7 +1691,7 @@ HTML = """<!DOCTYPE html>
   }
 
   document.addEventListener('keydown', function(e) {
-    if (e.key === 'Escape') closeCalModal();
+    if (e.key === 'Escape') { closeCalModal(); clearReportPin(); }
   });
 
   document.getElementById('project-select').addEventListener('change', onProjectChange);
