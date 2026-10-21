@@ -150,6 +150,9 @@ HTML = """<!DOCTYPE html>
     }
     .activity-wrap { border-bottom: 1px solid rgba(255,255,255,0.04); border-left: 3px solid transparent; padding-left: 8px; }
     .activity-wrap:last-child { border-bottom: none; }
+    .activity-wrap { transition: opacity 0.12s, background 0.12s; }
+    #activities.hl-active .activity-wrap { opacity: 0.35; }
+    #activities.hl-active .activity-wrap.hl { opacity: 1; background: color-mix(in srgb, var(--accent) 12%, transparent); }
     .time-gap {
       display: flex;
       align-items: center;
@@ -223,6 +226,8 @@ HTML = """<!DOCTYPE html>
       display: flex; align-items: baseline; justify-content: space-between;
     }
     .report-week-heading { margin-top: 22px; }
+    [data-hl] { cursor: default; border-radius: 3px; }
+    [data-hl]:hover { background: rgba(128,128,128,0.08); }
     .report-heading-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .report-toggle {
       cursor: pointer; user-select: none; flex-shrink: 0; margin-left: 8px;
@@ -632,6 +637,7 @@ HTML = """<!DOCTYPE html>
   var dayLabels = {};
   var visibleDays = new Set();
   var lastReportDayKey = null;
+  var reportHover = null;
   var reportPercentMode = false;
   try { reportPercentMode = localStorage.getItem('reportPercentMode') === '1'; } catch (e) {}
 
@@ -941,7 +947,7 @@ HTML = """<!DOCTYPE html>
         var endT = a.stopped_at ? fmtTime(a.stopped_at) : '···';
         var durS = a.duration_seconds ? fmtDur(a.duration_seconds) : '···';
         var pd = parseTags(a.description);
-        html += '<div class="activity-wrap" style="border-left-color:' + clientColor(a.project) + '">' +
+        html += '<div class="activity-wrap" data-start="' + esc(a.started_at) + '" style="border-left-color:' + clientColor(a.project) + '">' +
           '<div class="activity' + (a.active ? ' running' : '') + '" onclick="openEditModal(&#39;' + a.started_at + '&#39;)">' +
             '<span class="act-time">' + fmtTime(a.started_at) + '–' + endT + '</span>' +
             '<span class="act-dur">' + durS + '</span>' +
@@ -963,6 +969,7 @@ HTML = """<!DOCTYPE html>
       html += '</div>';
     }
     el.innerHTML = html;
+    applyReportHover();
     setupDayObserver();
   }
 
@@ -978,13 +985,18 @@ HTML = """<!DOCTYPE html>
     return d;
   }
 
+  function reportKeys(a) {
+    var segs = a.project.split('::');
+    return {client: segs[0] || a.project, proj: segs.length > 1 ? segs[1] : '—'};
+  }
+
   function aggregateReport(acts) {
     var agg = {clients: {}, clientOrder: [], labels: {}, labelOrder: [], totalSecs: 0};
     for (var i = 0; i < acts.length; i++) {
       var a = acts[i];
-      var segs = a.project.split('::');
-      var client = segs[0] || a.project;
-      var proj = segs.length > 1 ? segs[1] : '—';
+      var keys = reportKeys(a);
+      var client = keys.client;
+      var proj = keys.proj;
       var secs = a.duration_seconds || 0;
       var pd = parseTags(a.description);
       agg.totalSecs += secs;
@@ -1003,6 +1015,10 @@ HTML = """<!DOCTYPE html>
     return agg;
   }
 
+  function hlAttr(kind, a, b) {
+    return ' data-hl="' + esc(JSON.stringify([kind, a, b || ''])) + '"';
+  }
+
   function reportSectionHtml(label, acts, opts) {
     var heading = '<div class="report-heading' + (opts.extraClass || '') + '"><span class="report-heading-label">' + esc(label);
     var tail = (opts.withToggle ? reportToggleHtml() : '') + '</div>';
@@ -1013,12 +1029,12 @@ HTML = """<!DOCTYPE html>
     for (var ci = 0; ci < agg.clientOrder.length; ci++) {
       var cname = agg.clientOrder[ci];
       var c = agg.clients[cname];
-      html += '<div class="report-client-row" style="color:' + clientColor(cname + '::x') + '">' +
+      html += '<div class="report-client-row"' + hlAttr('client', cname) + ' style="color:' + clientColor(cname + '::x') + '">' +
         esc(cname) + '<span class="report-client-dur">' + fmtAmount(c.total, total) + '</span></div>';
       for (var pi = 0; pi < c.projOrder.length; pi++) {
         var pname = c.projOrder[pi];
         var p = c.projects[pname];
-        html += '<div class="report-proj-row"><span>' + esc(pname.replace(/-/g, ' ')) + '</span>' +
+        html += '<div class="report-proj-row"' + hlAttr('proj', cname, pname) + '><span>' + esc(pname.replace(/-/g, ' ')) + '</span>' +
           '<span class="report-proj-dur">' + fmtAmount(p.total, total) + '</span></div>';
         if (opts.showDescs && p.descs.length) {
           html += '<div class="report-descs">' + esc(p.descs.join(', ')) + '</div>';
@@ -1029,7 +1045,7 @@ HTML = """<!DOCTYPE html>
       html += '<hr class="report-sep">';
       for (var li = 0; li < agg.labelOrder.length; li++) {
         var lbl = agg.labelOrder[li];
-        html += '<div class="report-label-row"><span>' + tagChips([lbl]) + '</span>' +
+        html += '<div class="report-label-row"' + hlAttr('tag', lbl) + '><span>' + tagChips([lbl]) + '</span>' +
           '<span class="report-proj-dur">' + fmtAmount(agg.labels[lbl], total) + '</span></div>';
       }
     }
@@ -1043,8 +1059,45 @@ HTML = """<!DOCTYPE html>
     var weekStart = startOfWeek();
     var weekActs = acts.filter(function(a) { return new Date(a.started_at) >= weekStart; });
     document.getElementById('daily-report').innerHTML =
+      '<div data-scope="day">' +
       reportSectionHtml(dayLabels[dayKey] || dayKey, dayActs, {withToggle: true, showDescs: true}) +
-      reportSectionHtml('This Week', weekActs, {extraClass: ' report-week-heading'});
+      '</div><div data-scope="week">' +
+      reportSectionHtml('This Week', weekActs, {extraClass: ' report-week-heading'}) + '</div>';
+  }
+
+  function activityMatches(a, hl, scope) {
+    if (scope === 'day' && new Date(a.started_at).toDateString() !== lastReportDayKey) return false;
+    if (scope === 'week' && new Date(a.started_at) < startOfWeek()) return false;
+    if (hl[0] === 'tag') return parseTags(a.description).tags.indexOf(hl[1]) >= 0;
+    var keys = reportKeys(a);
+    if (keys.client !== hl[1]) return false;
+    return hl[0] === 'client' || keys.proj === hl[2];
+  }
+
+  function applyReportHover() {
+    var list = document.getElementById('activities');
+    var wraps = list.querySelectorAll('.activity-wrap[data-start]');
+    var hl = reportHover ? JSON.parse(reportHover.hl) : null;
+    list.classList.toggle('hl-active', !!hl);
+    for (var i = 0; i < wraps.length; i++) {
+      var a = activityData[wraps[i].getAttribute('data-start')];
+      wraps[i].classList.toggle('hl', !!(hl && a && activityMatches(a, hl, reportHover.scope)));
+    }
+  }
+
+  function setupReportHover() {
+    var panel = document.getElementById('daily-report');
+    panel.addEventListener('mouseover', function(e) {
+      var row = e.target.closest('[data-hl]');
+      var next = row ? {hl: row.getAttribute('data-hl'), scope: row.closest('[data-scope]').getAttribute('data-scope')} : null;
+      if (JSON.stringify(next) === JSON.stringify(reportHover)) return;
+      reportHover = next;
+      applyReportHover();
+    });
+    panel.addEventListener('mouseleave', function() {
+      reportHover = null;
+      applyReportHover();
+    });
   }
 
   function setupDayObserver() {
@@ -1611,6 +1664,7 @@ HTML = """<!DOCTYPE html>
     if (meetingPanelOpen && mwrap && !mwrap.contains(e.target)) closeMeetingPanel();
   });
 
+  setupReportHover();
   refreshStatus();
   loadProjects();
   setInterval(refreshStatus, 10000);
