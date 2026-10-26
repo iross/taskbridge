@@ -56,6 +56,20 @@ class TaskTimeTracking:
     updated_at: datetime | None = None
 
 
+SYNTHETIC_TASK_ID_PREFIXES = ("meeting:", "cal:", "ongoing:")
+
+
+def is_real_todoist_task_id(task_id: str | None) -> bool:
+    """Return True if task_id refers to an actual Todoist task.
+
+    Tracking records for meetings, calendar events and ongoing items carry synthetic IDs
+    (e.g. ``meeting:standup``) that must never be sent to the Todoist API.
+    """
+    if not task_id:
+        return False
+    return not task_id.startswith(SYNTHETIC_TASK_ID_PREFIXES)
+
+
 class Database:
     """Database operations for TaskBridge."""
 

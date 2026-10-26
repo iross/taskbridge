@@ -27,18 +27,18 @@ def mock_config(tmp_path):
 
 
 # ============================================================================
-# Config: get/set/delete meetings
+# Config: get/set/delete meeting templates
 # ============================================================================
 
 
 class TestMeetingConfig:
     def test_get_meetings_empty(self, mock_config):
-        assert mock_config.get_meetings() == {}
+        assert mock_config.get_templates("meeting") == {}
 
     def test_set_meeting_basic(self, mock_config):
-        mock_config.set_meeting("standup", "Daily Standup")
+        mock_config.set_template("meeting", "standup", "Daily Standup")
 
-        meetings = mock_config.get_meetings()
+        meetings = mock_config.get_templates("meeting")
         assert "standup" in meetings
         assert meetings["standup"]["description"] == "Daily Standup"
         assert meetings["standup"]["project"] == ""
@@ -46,7 +46,8 @@ class TestMeetingConfig:
         assert meetings["standup"]["tags"] == []
 
     def test_set_meeting_full(self, mock_config):
-        mock_config.set_meeting(
+        mock_config.set_template(
+            "meeting",
             "standup",
             "Daily Standup",
             project="webapp",
@@ -54,37 +55,37 @@ class TestMeetingConfig:
             tags=["standup", "recurring"],
         )
 
-        m = mock_config.get_meetings()["standup"]
+        m = mock_config.get_templates("meeting")["standup"]
         assert m["project"] == "webapp"
         assert m["client"] == "acme"
         assert m["tags"] == ["standup", "recurring"]
 
     def test_set_meeting_overwrites(self, mock_config):
-        mock_config.set_meeting("standup", "Old Description")
-        mock_config.set_meeting("standup", "New Description", project="proj")
+        mock_config.set_template("meeting", "standup", "Old Description")
+        mock_config.set_template("meeting", "standup", "New Description", project="proj")
 
-        m = mock_config.get_meetings()["standup"]
+        m = mock_config.get_templates("meeting")["standup"]
         assert m["description"] == "New Description"
         assert m["project"] == "proj"
 
     def test_delete_meeting_exists(self, mock_config):
-        mock_config.set_meeting("standup", "Daily Standup")
+        mock_config.set_template("meeting", "standup", "Daily Standup")
 
-        result = mock_config.delete_meeting("standup")
+        result = mock_config.delete_template("meeting", "standup")
 
         assert result is True
-        assert "standup" not in mock_config.get_meetings()
+        assert "standup" not in mock_config.get_templates("meeting")
 
     def test_delete_meeting_not_found(self, mock_config):
-        result = mock_config.delete_meeting("nonexistent")
+        result = mock_config.delete_template("meeting", "nonexistent")
 
         assert result is False
 
     def test_multiple_meetings_independent(self, mock_config):
-        mock_config.set_meeting("standup", "Daily Standup")
-        mock_config.set_meeting("retro", "Sprint Retro", client="acme")
+        mock_config.set_template("meeting", "standup", "Daily Standup")
+        mock_config.set_template("meeting", "retro", "Sprint Retro", client="acme")
 
-        meetings = mock_config.get_meetings()
+        meetings = mock_config.get_templates("meeting")
         assert len(meetings) == 2
         assert "standup" in meetings
         assert "retro" in meetings
@@ -98,7 +99,7 @@ class TestMeetingConfig:
 class TestMeetingDefineCommand:
     @patch("taskbridge.main.config_manager")
     def test_define_creates_meeting(self, mock_cfg, runner):
-        mock_cfg.get_meetings.return_value = {}
+        mock_cfg.get_templates.return_value = {}
 
         args = [
             "meeting",
@@ -116,7 +117,8 @@ class TestMeetingDefineCommand:
         result = runner.invoke(app, args)
 
         assert result.exit_code == 0
-        mock_cfg.set_meeting.assert_called_once_with(
+        mock_cfg.set_template.assert_called_once_with(
+            "meeting",
             alias="standup",
             description="Daily Standup",
             project="webapp",
@@ -126,7 +128,7 @@ class TestMeetingDefineCommand:
 
     @patch("taskbridge.main.config_manager")
     def test_define_shows_bartib_project(self, mock_cfg, runner):
-        mock_cfg.get_meetings.return_value = {}
+        mock_cfg.get_templates.return_value = {}
 
         result = runner.invoke(
             app,
@@ -139,12 +141,13 @@ class TestMeetingDefineCommand:
     @patch("taskbridge.main.config_manager")
     def test_define_minimal(self, mock_cfg, runner):
         """Define with only required args — description."""
-        mock_cfg.get_meetings.return_value = {}
+        mock_cfg.get_templates.return_value = {}
 
         result = runner.invoke(app, ["meeting", "define", "focus", "-d", "Focus block"])
 
         assert result.exit_code == 0
-        mock_cfg.set_meeting.assert_called_once_with(
+        mock_cfg.set_template.assert_called_once_with(
+            "meeting",
             alias="focus",
             description="Focus block",
             project="",
@@ -156,7 +159,7 @@ class TestMeetingDefineCommand:
 class TestMeetingListCommand:
     @patch("taskbridge.main.config_manager")
     def test_list_empty(self, mock_cfg, runner):
-        mock_cfg.get_meetings.return_value = {}
+        mock_cfg.get_templates.return_value = {}
 
         result = runner.invoke(app, ["meeting", "list"])
 
@@ -166,7 +169,7 @@ class TestMeetingListCommand:
     @patch("taskbridge.main.config_manager")
     def test_list_shows_meetings(self, mock_cfg, runner):
         mock_cfg.get_tag_colors.return_value = {}
-        mock_cfg.get_meetings.return_value = {
+        mock_cfg.get_templates.return_value = {
             "standup": {
                 "description": "Daily Standup",
                 "project": "webapp",
@@ -186,7 +189,7 @@ class TestMeetingListCommand:
 class TestMeetingUndefineCommand:
     @patch("taskbridge.main.config_manager")
     def test_undefine_success(self, mock_cfg, runner):
-        mock_cfg.delete_meeting.return_value = True
+        mock_cfg.delete_template.return_value = True
 
         result = runner.invoke(app, ["meeting", "undefine", "standup"])
 
@@ -195,7 +198,7 @@ class TestMeetingUndefineCommand:
 
     @patch("taskbridge.main.config_manager")
     def test_undefine_not_found(self, mock_cfg, runner):
-        mock_cfg.delete_meeting.return_value = False
+        mock_cfg.delete_template.return_value = False
 
         result = runner.invoke(app, ["meeting", "undefine", "nonexistent"])
 
@@ -209,7 +212,7 @@ class TestMeetingStartCommand:
     @patch("taskbridge.main.config_manager")
     def test_start_named_meeting(self, mock_cfg, mock_bartib_cls, mock_db, runner):
         """Starting a defined alias uses stored definition."""
-        mock_cfg.get_meetings.return_value = {
+        mock_cfg.get_templates.return_value = {
             "standup": {
                 "description": "Daily Standup",
                 "project": "webapp",
@@ -236,7 +239,7 @@ class TestMeetingStartCommand:
     @patch("taskbridge.main.config_manager")
     def test_start_adhoc_meeting(self, mock_cfg, mock_bartib_cls, mock_db, runner):
         """Unrecognised name is treated as ad-hoc description."""
-        mock_cfg.get_meetings.return_value = {}
+        mock_cfg.get_templates.return_value = {}
         mock_db.get_active_tracking.return_value = None
 
         with patch("taskbridge.main.datetime") as mock_dt:
@@ -256,7 +259,7 @@ class TestMeetingStartCommand:
         """Starting a meeting stops any currently running activity."""
         from taskbridge.database import TaskTimeTracking
 
-        mock_cfg.get_meetings.return_value = {}
+        mock_cfg.get_templates.return_value = {}
         active = TaskTimeTracking(
             id=1,
             todoist_task_id="task-123",
@@ -284,7 +287,7 @@ class TestMeetingStartCommand:
         self, mock_cfg, mock_bartib_cls, mock_db, runner
     ):
         """Ad-hoc meeting with no project uses 'meetings' as bartib project."""
-        mock_cfg.get_meetings.return_value = {}
+        mock_cfg.get_templates.return_value = {}
         mock_db.get_active_tracking.return_value = None
 
         with patch("taskbridge.main.datetime") as mock_dt:
@@ -302,7 +305,7 @@ class TestMeetingStartCommand:
     @patch("taskbridge.main.config_manager")
     def test_start_cli_flags_override_definition(self, mock_cfg, mock_bartib_cls, mock_db, runner):
         """CLI flags take precedence over the stored definition."""
-        mock_cfg.get_meetings.return_value = {
+        mock_cfg.get_templates.return_value = {
             "standup": {
                 "description": "Daily Standup",
                 "project": "webapp",
@@ -325,7 +328,7 @@ class TestMeetingStartCommand:
     @patch("taskbridge.main.config_manager")
     def test_start_saves_db_record(self, mock_cfg, mock_bartib_cls, mock_db, runner):
         """Starting a meeting saves a record to the DB."""
-        mock_cfg.get_meetings.return_value = {}
+        mock_cfg.get_templates.return_value = {}
         mock_db.get_active_tracking.return_value = None
 
         with patch("taskbridge.main.datetime") as mock_dt:

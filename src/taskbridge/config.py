@@ -3,12 +3,42 @@
 import os
 import subprocess
 import urllib.parse
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import requests
 import typer
 import yaml
+
+
+@dataclass(frozen=True)
+class TemplateKind:
+    """A kind of saved tracking template (e.g. recurring meetings, ongoing items)."""
+
+    config_key: str
+    usage_key: str
+    default_project: str
+    tag: str
+    noun: str
+
+
+TEMPLATE_KINDS = {
+    "meeting": TemplateKind(
+        config_key="meetings",
+        usage_key="meeting_usage",
+        default_project="meetings",
+        tag="meeting",
+        noun="meeting",
+    ),
+    "ongoing": TemplateKind(
+        config_key="ongoing",
+        usage_key="ongoing_usage",
+        default_project="ongoing",
+        tag="ongoing",
+        noun="ongoing item",
+    ),
+}
 
 
 class Config:
@@ -86,53 +116,70 @@ class Config:
 
         return module_name in profile_config.get("enabled_modules", [])
 
-    def get_meetings(self) -> dict[str, dict]:
-        """Get all defined recurring meeting templates.
+    def _template_keys(self, kind: str) -> tuple[str, str]:
+        if kind not in TEMPLATE_KINDS:
+            raise ValueError(
+                f"Unknown template kind '{kind}'; expected one of {sorted(TEMPLATE_KINDS)}"
+            )
+        spec = TEMPLATE_KINDS[kind]
+        return spec.config_key, spec.usage_key
+
+    def get_templates(self, kind: str) -> dict[str, dict]:
+        """Get saved tracking templates (meetings or ongoing items) of one kind.
+
+        Args:
+            kind: "meeting" or "ongoing".
 
         Returns:
             Dict mapping alias to {description, project, client, tags}
         """
-        return self.get("meetings", {})
+        key, _ = self._template_keys(kind)
+        return self.get(key, {})
 
-    def set_meeting(
+    def set_template(
         self,
+        kind: str,
         alias: str,
         description: str,
         project: str = "",
         client: str = "",
         tags: list[str] | None = None,
     ) -> None:
-        """Define or update a recurring meeting template."""
-        meetings = self.get_meetings()
-        meetings[alias] = {
+        """Define or update a saved tracking template."""
+        key, _ = self._template_keys(kind)
+        templates = self.get_templates(kind)
+        templates[alias] = {
             "description": description,
             "project": project,
             "client": client,
             "tags": tags or [],
         }
-        self.set("meetings", meetings)
+        self.set(key, templates)
 
-    def delete_meeting(self, alias: str) -> bool:
-        """Remove a recurring meeting definition. Returns False if alias not found."""
-        meetings = self.get_meetings()
-        if alias not in meetings:
+    def delete_template(self, kind: str, alias: str) -> bool:
+        """Remove a saved tracking template. Returns False if alias not found."""
+        key, usage_key = self._template_keys(kind)
+        templates = self.get_templates(kind)
+        if alias not in templates:
             return False
-        del meetings[alias]
-        self.set("meetings", meetings)
-        usage = self.get("meeting_usage", {})
+        del templates[alias]
+        self.set(key, templates)
+        usage = self.get(usage_key, {})
         usage.pop(alias, None)
-        self.set("meeting_usage", usage)
+        self.set(usage_key, usage)
         return True
 
-    def get_meeting_usage(self) -> dict[str, int]:
-        """Get selection counts for each meeting alias."""
-        return self.get("meeting_usage", {})
+    def get_template_usage(self, kind: str) -> dict[str, int]:
+        """Get selection counts for each template alias of one kind."""
+        _, usage_key = self._template_keys(kind)
+        return self.get(usage_key, {})
 
-    def increment_meeting_usage(self, alias: str) -> None:
-        """Increment the selection count for a meeting alias."""
-        usage = self.get("meeting_usage", {})
+    def increment_template_usage(self, kind: str, alias: str) -> None:
+        """Increment the selection count for a template alias."""
+        _, usage_key = self._template_keys(kind)
+        usage = self.get(usage_key, {})
         usage[alias] = usage.get(alias, 0) + 1
-        self.set("meeting_usage", usage)
+        self.set(usage_key, usage)
 
     def get_client_aliases(self) -> dict[str, str]:
         """Get client name aliases mapping variant → canonical.

@@ -11,8 +11,9 @@ import typer
 
 from . import inbox
 from .bartib_integration import BartibIntegration
+from .config import TEMPLATE_KINDS
 from .config import config as config_manager
-from .database import TaskTimeTracking, TodoistNoteMapping, db
+from .database import TaskTimeTracking, TodoistNoteMapping, db, is_real_todoist_task_id
 from .todoist_api import TodoistAPI, TodoistProject, TodoistTask
 
 # Main app
@@ -30,6 +31,7 @@ map_app = typer.Typer(help="Task-to-note mapping commands")
 sync_app = typer.Typer(help="Synchronization commands")
 time_app = typer.Typer(help="Time tracking commands")
 meeting_app = typer.Typer(help="Meeting time tracking commands")
+ongoing_app = typer.Typer(help="Ongoing work (email, catchup, ...) time tracking commands")
 export_app = typer.Typer(help="Export commands")
 inbox_app = typer.Typer(help="Unified inbox commands")
 
@@ -40,6 +42,7 @@ app.add_typer(map_app, name="map")
 app.add_typer(sync_app, name="sync")
 app.add_typer(time_app, name="time")
 app.add_typer(meeting_app, name="meeting")
+app.add_typer(ongoing_app, name="ongoing")
 app.add_typer(export_app, name="export")
 app.add_typer(inbox_app, name="inbox")
 
@@ -2588,9 +2591,8 @@ def stop_tracking_internal(tracking: TaskTimeTracking) -> tuple[bool, int]:
         # Update database
         db.update_tracking_record(tracking, stopped_at=stopped_at)
 
-        # Add comment to Todoist if linked (not a synthetic meeting ID)
-        is_meeting = tracking.todoist_task_id.startswith("meeting:")
-        if tracking.todoist_task_id and not is_meeting and duration > 0:
+        # Add comment to Todoist if linked to a real task
+        if is_real_todoist_task_id(tracking.todoist_task_id) and duration > 0:
             try:
                 api = TodoistAPI()
                 formatted_time = format_duration(duration)
@@ -3361,6 +3363,35 @@ def time_serve(
 # ============================================================================
 
 
+def switch_tracking_to_synthetic(
+    bartib: BartibIntegration, description: str, bartib_project: str, task_id: str
+) -> None:
+    """Stop any active tracking, then start bartib on an entry with no Todoist task.
+
+    Args:
+        bartib: Bartib wrapper used to start tracking.
+        description: Bartib description, with tags already appended.
+        bartib_project: Encoded bartib project (``client::project``).
+        task_id: Synthetic ``<kind>:<name>`` ID; spaces become dashes and it is lowercased.
+    """
+    active = db.get_active_tracking()
+    if active:
+        typer.echo(f"⏹️  Stopping: {active.task_name} ({active.project_name})")
+        success, duration = stop_tracking_internal(active)
+        if success:
+            typer.echo(f"   ✅ Tracked {format_duration(duration)}")
+
+    bartib.start_tracking(description=description, project=bartib_project)
+
+    # Synthetic task ID so stop/list work without a Todoist task
+    db.create_tracking_record(
+        todoist_task_id=task_id.lower().replace(" ", "-"),
+        project_name=bartib_project,
+        task_name=description,
+        started_at=datetime.now(),
+    )
+
+
 @meeting_app.command("define")
 def meeting_define(
     alias: str,
@@ -3372,7 +3403,8 @@ def meeting_define(
     """Define a recurring meeting template by alias."""
     tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
 
-    config_manager.set_meeting(
+    config_manager.set_template(
+        "meeting",
         alias=alias,
         description=description,
         project=project,
@@ -3390,7 +3422,7 @@ def meeting_define(
 @meeting_app.command("list")
 def meeting_list():
     """List all defined recurring meeting templates."""
-    meetings = config_manager.get_meetings()
+    meetings = config_manager.get_templates("meeting")
 
     if not meetings:
         typer.echo("No recurring meetings defined.")
@@ -3414,7 +3446,7 @@ def meeting_list():
 @meeting_app.command("undefine")
 def meeting_undefine(alias: str):
     """Remove a recurring meeting definition."""
-    if config_manager.delete_meeting(alias):
+    if config_manager.delete_template("meeting", alias):
         typer.echo(f"✅ Removed meeting '{alias}'")
     else:
         typer.echo(f"❌ No meeting named '{alias}'")
@@ -3433,7 +3465,7 @@ def meeting_start(
         bartib = BartibIntegration()
 
         # Resolve alias or treat name as ad-hoc description
-        definition = config_manager.get_meetings().get(name)
+        definition = config_manager.get_templates("meeting").get(name)
         if definition:
             description = definition["description"]
             resolved_project = project or definition.get("project") or "meetings"
@@ -3451,25 +3483,7 @@ def meeting_start(
         bartib_project = build_bartib_project(resolved_project, resolved_client)
         description = append_tags_to_description(description, tag_list)
 
-        # Stop any active tracking first
-        active = db.get_active_tracking()
-        if active:
-            typer.echo(f"⏹️  Stopping: {active.task_name} ({active.project_name})")
-            success, duration = stop_tracking_internal(active)
-            if success:
-                typer.echo(f"   ✅ Tracked {format_duration(duration)}")
-
-        # Start bartib
-        bartib.start_tracking(description=description, project=bartib_project)
-
-        # Save to DB with a synthetic task ID so stop/list still work
-        slug = name.lower().replace(" ", "-")
-        db.create_tracking_record(
-            todoist_task_id=f"meeting:{slug}",
-            project_name=bartib_project,
-            task_name=description,
-            started_at=datetime.now(),
-        )
+        switch_tracking_to_synthetic(bartib, description, bartib_project, f"meeting:{name}")
 
         typer.echo(f"▶️  Meeting: {description}")
         typer.echo(f"   📁 {bartib_project}")
@@ -3482,6 +3496,105 @@ def meeting_start(
     except Exception as e:
         typer.echo(f"❌ Error: {e}")
         raise typer.Exit(1) from None
+
+
+# ============================================================================
+# ONGOING COMMANDS
+# ============================================================================
+
+ONGOING = TEMPLATE_KINDS["ongoing"]
+
+
+@ongoing_app.command("define")
+def ongoing_define(
+    alias: str,
+    description: str = typer.Option(..., "--description", "-d", help="Ongoing item description"),
+    project: str = typer.Option("", "--project", "-p", help="Project context"),
+    client: str = typer.Option("", "--client", "-c", help="Client context"),
+    tags: str = typer.Option("", "--tags", "-t", help="Comma-separated tags"),
+):
+    """Define an ongoing item (never-closing work like email or catchup) by alias."""
+    tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+    config_manager.set_template(
+        "ongoing",
+        alias=alias,
+        description=description,
+        project=project,
+        client=client,
+        tags=tag_list,
+    )
+
+    bartib_project = build_bartib_project(project or ONGOING.default_project, client)
+    typer.echo(f"✅ Defined ongoing item '{alias}'")
+    typer.echo(f"   Description: {description}")
+    typer.echo(f"   Bartib project: {bartib_project}")
+    typer.echo(f"   Start with: taskbridge ongoing start {alias}")
+
+
+@ongoing_app.command("list")
+def ongoing_list():
+    """List all defined ongoing items."""
+    items = config_manager.get_templates("ongoing")
+
+    if not items:
+        typer.echo("No ongoing items defined.")
+        typer.echo("   Use 'taskbridge ongoing define <alias>' to add one.")
+        return
+
+    typer.echo(f"\n∞ Ongoing Items ({len(items)}):")
+    typer.echo("=" * 60)
+
+    for alias, item in items.items():
+        bartib_project = build_bartib_project(
+            item.get("project") or ONGOING.default_project, item.get("client", "")
+        )
+        typer.echo(f"\n  {alias}")
+        typer.echo(f"    Description : {item['description']}")
+        typer.echo(f"    Bartib      : {bartib_project}")
+        if item.get("tags"):
+            typer.echo(f"    Tags        : {format_tag_pills(item['tags'])}")
+
+    typer.echo()
+
+
+@ongoing_app.command("undefine")
+def ongoing_undefine(alias: str):
+    """Remove an ongoing item definition."""
+    if config_manager.delete_template("ongoing", alias):
+        typer.echo(f"✅ Removed ongoing item '{alias}'")
+    else:
+        typer.echo(f"❌ No ongoing item named '{alias}'")
+        raise typer.Exit(1) from None
+
+
+@ongoing_app.command("start")
+def ongoing_start(alias: str):
+    """Start tracking a defined ongoing item by alias."""
+    definition = config_manager.get_templates("ongoing").get(alias)
+    if not definition:
+        typer.echo(f"❌ No ongoing item named '{alias}'")
+        typer.echo("   Use 'taskbridge ongoing list' to see defined items.")
+        raise typer.Exit(1) from None
+
+    tags = list(definition.get("tags", []))
+    if ONGOING.tag not in tags:
+        tags.append(ONGOING.tag)
+    bartib_project = build_bartib_project(
+        definition.get("project") or ONGOING.default_project, definition.get("client", "")
+    )
+    description = append_tags_to_description(definition["description"], tags)
+
+    try:
+        switch_tracking_to_synthetic(
+            BartibIntegration(), description, bartib_project, f"ongoing:{alias}"
+        )
+    except RuntimeError as e:
+        typer.echo(f"❌ Bartib error: {e}")
+        raise typer.Exit(1) from None
+
+    config_manager.increment_template_usage("ongoing", alias)
+    typer.echo(f"▶️  Ongoing: {description}")
+    typer.echo(f"   📁 {bartib_project}")
 
 
 if __name__ == "__main__":
