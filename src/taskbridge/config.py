@@ -44,14 +44,31 @@ TEMPLATE_KINDS = {
 class Config:
     """Configuration management for TaskBridge."""
 
-    def __init__(self):
-        self.config_dir = Path.home() / ".taskbridge"
+    def __init__(self, config_dir: Path | None = None):
+        self.config_dir = config_dir or Path.home() / ".taskbridge"
         self.config_file = self.config_dir / "config.yaml"
         self._config_data: dict[str, Any] = {}
+        self._loaded_mtime_ns: int | None = None
         self._load_config()
+
+    def _file_mtime_ns(self) -> int | None:
+        try:
+            return self.config_file.stat().st_mtime_ns
+        except FileNotFoundError:
+            return None
+
+    def _reload_if_changed(self) -> None:
+        """Re-read the config file if another process (e.g. the CLI) wrote it since our last load.
+
+        Long-running processes like the web UI would otherwise serve stale values and, on their
+        next write, overwrite changes made elsewhere.
+        """
+        if self._file_mtime_ns() != self._loaded_mtime_ns:
+            self._load_config()
 
     def _load_config(self) -> None:
         """Load configuration from file."""
+        self._loaded_mtime_ns = self._file_mtime_ns()
         if self.config_file.exists():
             try:
                 with open(self.config_file) as f:
@@ -75,12 +92,15 @@ class Config:
 
     def get(self, key: str, default: Any = None) -> Any:
         """Get configuration value."""
+        self._reload_if_changed()
         return self._config_data.get(key, default)
 
     def set(self, key: str, value: Any) -> None:
         """Set configuration value."""
+        self._reload_if_changed()
         self._config_data[key] = value
         self._save_config()
+        self._loaded_mtime_ns = self._file_mtime_ns()
 
     def get_todoist_token(self) -> str | None:
         """Get Todoist API token."""

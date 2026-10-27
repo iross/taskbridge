@@ -28,11 +28,7 @@ def runner():
 @pytest.fixture
 def cfg(tmp_path):
     """Config instance backed by a temp directory."""
-    config = Config.__new__(Config)
-    config.config_dir = tmp_path
-    config.config_file = tmp_path / "config.yaml"
-    config._config_data = {}
-    return config
+    return Config(config_dir=tmp_path)
 
 
 # ============================================================================

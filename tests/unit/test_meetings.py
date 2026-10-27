@@ -19,11 +19,7 @@ def mock_config(tmp_path):
     """Config instance backed by a temp directory."""
     from taskbridge.config import Config
 
-    cfg = Config.__new__(Config)
-    cfg.config_dir = tmp_path
-    cfg.config_file = tmp_path / "config.yaml"
-    cfg._config_data = {}
-    return cfg
+    return Config(config_dir=tmp_path)
 
 
 # ============================================================================
