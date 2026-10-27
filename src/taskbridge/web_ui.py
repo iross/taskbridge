@@ -184,6 +184,7 @@ HTML = """<!DOCTYPE html>
     .activity.editing { background: rgba(128,128,128,0.06); }
     .act-time { color: var(--muted); font-size: 0.78rem; line-height: 1.4; }
     .act-dur { color: var(--muted); font-size: 0.78rem; }
+    .overlap-mark { color: var(--danger); font-weight: 700; margin-left: 4px; cursor: help; }
     .act-project { color: var(--accent); font-size: 0.78rem; margin-bottom: 1px; }
     .act-desc { color: var(--text); }
     .tag-chip {
@@ -990,7 +991,7 @@ HTML = """<!DOCTYPE html>
         var pd = parseTags(a.description);
         html += '<div class="activity-wrap" data-start="' + esc(a.started_at) + '" style="border-left-color:' + clientColor(a.project) + '">' +
           '<div class="activity' + (a.active ? ' running' : '') + '" onclick="openEditModal(&#39;' + a.started_at + '&#39;)">' +
-            '<span class="act-time">' + fmtTime(a.started_at) + '–' + endT + '</span>' +
+            '<span class="act-time">' + fmtTime(a.started_at) + '–' + endT + overlapMark(a) + '</span>' +
             '<span class="act-dur">' + durS + '</span>' +
             '<div><div class="act-project">' + esc(a.project) + '</div>' +
             '<div class="act-desc">' + esc(pd.text) + tagChips(pd.tags) + '</div></div>' +
@@ -1012,6 +1013,16 @@ HTML = """<!DOCTYPE html>
     el.innerHTML = html;
     applyReportHover();
     setupDayObserver();
+  }
+
+  function overlapMark(a) {
+    if (!a.overlaps || !a.overlaps.length) return '';
+    var lines = a.overlaps.map(function(start) {
+      var o = activityData[start];
+      var end = o.stopped_at ? fmtTime(o.stopped_at) : 'now';
+      return fmtTime(o.started_at) + '–' + end + ' ' + o.project;
+    });
+    return '<span class="overlap-mark" title="' + esc('Overlaps:\\n' + lines.join('\\n')) + '">!</span>';
   }
 
   function reportToggleHtml() {
@@ -1877,8 +1888,32 @@ def _read_activities(days: int = 7) -> list[dict]:
     except OSError:
         pass
 
+    _mark_overlaps(activities, now=datetime.now())
     activities.sort(key=lambda a: a["started_at"], reverse=True)
     return activities
+
+
+def _mark_overlaps(activities: list[dict], now: datetime) -> None:
+    """Set each activity's `overlaps` to the start times of activities overlapping it.
+
+    Intervals that merely touch (one stops the minute the next starts) don't count.
+    A running activity is treated as ending at `now`.
+    """
+    spans = []
+    for a in activities:
+        a["overlaps"] = []
+        start = datetime.fromisoformat(a["started_at"])
+        end = datetime.fromisoformat(a["stopped_at"]) if a["stopped_at"] else now
+        spans.append((start, end, a))
+    spans.sort(key=lambda s: s[0])
+
+    for i, (start, end, a) in enumerate(spans):
+        for other_start, other_end, other in spans[i + 1 :]:
+            if other_start >= end:
+                break
+            if other_end > start:
+                a["overlaps"].append(other["started_at"])
+                other["overlaps"].append(a["started_at"])
 
 
 def _get_todoist_projects() -> list[dict]:

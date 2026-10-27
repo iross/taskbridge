@@ -210,3 +210,43 @@ class TestGetOrCreateTaskNote:
 
         with pytest.raises(ValueError, match="Task not found"):
             web_ui._get_or_create_task_note("task-missing")
+
+
+def _act(start: str, stop: str | None) -> dict:
+    return {"started_at": f"2026-01-08T{start}:00", "stopped_at": stop and f"2026-01-08T{stop}:00"}
+
+
+class TestMarkOverlaps:
+    """Tests for _mark_overlaps."""
+
+    NOW = datetime(2026, 1, 8, 12, 0)
+
+    def test_overlapping_pair_points_at_each_other(self):
+        a, b = _act("09:00", "10:00"), _act("09:30", "10:30")
+        web_ui._mark_overlaps([a, b], now=self.NOW)
+        assert a["overlaps"] == [b["started_at"]]
+        assert b["overlaps"] == [a["started_at"]]
+
+    def test_back_to_back_entries_do_not_overlap(self):
+        a, b = _act("09:00", "10:00"), _act("10:00", "11:00")
+        web_ui._mark_overlaps([a, b], now=self.NOW)
+        assert a["overlaps"] == []
+        assert b["overlaps"] == []
+
+    def test_entry_inside_a_long_one_overlaps_it_but_not_its_neighbours(self):
+        long = _act("09:00", "11:00")
+        first, second = _act("09:15", "09:30"), _act("10:00", "10:30")
+        web_ui._mark_overlaps([second, long, first], now=self.NOW)
+        assert sorted(long["overlaps"]) == [first["started_at"], second["started_at"]]
+        assert first["overlaps"] == [long["started_at"]]
+        assert second["overlaps"] == [long["started_at"]]
+
+    def test_running_entry_ends_at_now(self):
+        running = _act("11:00", None)
+        before_now, after_now = _act("11:30", "11:45"), _act("12:00", "12:30")
+        web_ui._mark_overlaps([running, before_now, after_now], now=self.NOW)
+        assert running["overlaps"] == [before_now["started_at"]]
+        assert after_now["overlaps"] == []
+
+    def test_empty_list(self):
+        web_ui._mark_overlaps([], now=self.NOW)
