@@ -1493,8 +1493,15 @@ HTML = """<!DOCTYPE html>
     else if (projectVal.startsWith('bartib:')) body.project_raw = projectVal.slice(7);
     if (taskId) body.todoist_task_id = taskId;
     if (isMeeting) body.is_meeting = true;
-    var timeFrom = document.getElementById('time-from').value;
-    var timeTo = document.getElementById('time-to').value;
+    var fromEl = document.getElementById('time-from');
+    var toEl = document.getElementById('time-to');
+    if (fromEl.validity.badInput || toEl.validity.badInput) {
+      errEl.textContent = 'Finish entering From/To (including AM/PM), or clear them';
+      return;
+    }
+    var timeFrom = fromEl.value;
+    var timeTo = toEl.value;
+    if (timeTo && !timeFrom) { errEl.textContent = 'To needs a From time'; return; }
     if (timeFrom) body.time_from = timeFrom;
     if (timeTo) body.time_to = timeTo;
     fetch('/api/start', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
