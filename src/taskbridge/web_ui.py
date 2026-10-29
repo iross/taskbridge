@@ -1023,7 +1023,7 @@ HTML = """<!DOCTYPE html>
       if (!groups[dk]) { groups[dk] = {label: fmtDay(a.started_at), items: [], total: 0}; keys.push(dk); dayLabels[dk] = fmtDay(a.started_at); }
       groups[dk].items.push(a);
       if (a.duration_seconds) groups[dk].total += a.duration_seconds;
-      activityData[a.started_at] = a;
+      activityData[a.line_no] = a;
     }
     var html = '';
     for (var k = 0; k < keys.length; k++) {
@@ -1036,8 +1036,8 @@ HTML = """<!DOCTYPE html>
         var endT = a.stopped_at ? fmtTime(a.stopped_at) : '···';
         var durS = a.duration_seconds ? fmtDur(a.duration_seconds) : '···';
         var pd = parseTags(a.description);
-        html += '<div class="activity-wrap" data-start="' + esc(a.started_at) + '" style="border-left-color:' + clientColor(a.project) + '">' +
-          '<div class="activity' + (a.active ? ' running' : '') + '" onclick="openEditModal(&#39;' + a.started_at + '&#39;)">' +
+        html += '<div class="activity-wrap" data-line="' + a.line_no + '" style="border-left-color:' + clientColor(a.project) + '">' +
+          '<div class="activity' + (a.active ? ' running' : '') + '" onclick="openEditModal(' + a.line_no + ')">' +
             '<span class="act-time">' + fmtTime(a.started_at) + '–' + endT + overlapMark(a) + '</span>' +
             '<span class="act-dur">' + durS + '</span>' +
             '<div><div class="act-project">' + esc(a.project) + '</div>' +
@@ -1064,8 +1064,8 @@ HTML = """<!DOCTYPE html>
 
   function overlapMark(a) {
     if (!a.overlaps || !a.overlaps.length) return '';
-    var lines = a.overlaps.map(function(start) {
-      var o = activityData[start];
+    var lines = a.overlaps.map(function(lineNo) {
+      var o = activityData[lineNo];
       var end = o.stopped_at ? fmtTime(o.stopped_at) : 'now';
       return fmtTime(o.started_at) + '–' + end + ' ' + o.project;
     });
@@ -1205,10 +1205,10 @@ HTML = """<!DOCTYPE html>
   function applyReportHover() {
     var state = reportPin || reportHover;
     var list = document.getElementById('activities');
-    var wraps = list.querySelectorAll('.activity-wrap[data-start]');
+    var wraps = list.querySelectorAll('.activity-wrap[data-line]');
     list.classList.toggle('hl-active', !!state);
     for (var i = 0; i < wraps.length; i++) {
-      var a = activityData[wraps[i].getAttribute('data-start')];
+      var a = activityData[wraps[i].getAttribute('data-line')];
       wraps[i].classList.toggle('hl', !!(state && a && activityMatches(a, state)));
     }
     var rows = document.querySelectorAll('#daily-report [data-hl]');
@@ -1620,7 +1620,8 @@ HTML = """<!DOCTYPE html>
     errEl.textContent = '';
     var stopEl = document.getElementById('em-stopped_at');
     var body = {
-      original_started_at: editModalKey,
+      line_no: editModalKey,
+      original_started_at: activityData[editModalKey].started_at,
       new_started_at: document.getElementById('em-started_at').value,
       new_stopped_at: stopEl ? stopEl.value : '',
       project: document.getElementById('em-project').value.trim(),
@@ -1635,18 +1636,22 @@ HTML = """<!DOCTYPE html>
 
   function deleteActivityModal() {
     if (!confirm('Delete this entry?')) return;
+    var errEl = document.getElementById('edit-modal-err');
+    errEl.textContent = '';
+    var body = {line_no: editModalKey, original_started_at: activityData[editModalKey].started_at};
     fetch('/api/activity/delete', {method:'POST', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({original_started_at: editModalKey})})
+      body:JSON.stringify(body)})
       .then(function(r){ return r.json(); }).then(function(data) {
         if (data.success) { closeEditModal(); refreshStatus(); }
-      });
+        else { errEl.textContent = data.error || 'Delete failed'; }
+      }).catch(function() { errEl.textContent = 'Network error'; });
   }
 
   function resumeActivityModal() {
     var errEl = document.getElementById('edit-modal-err');
     errEl.textContent = '';
     var body = {
-      original_started_at: editModalKey,
+      original_started_at: activityData[editModalKey].started_at,
       project: document.getElementById('em-project').value.trim(),
       description: document.getElementById('em-description').value.trim()
     };
@@ -1936,8 +1941,8 @@ def _read_activities(days: int = 7) -> list[dict]:
 
     try:
         with open(bartib_file) as f:
-            for line in f:
-                line = line.strip()
+            for line_no, raw_line in enumerate(f):
+                line = raw_line.strip()
                 if not line:
                     continue
                 parts = line.split(" | ", 2)
@@ -1965,6 +1970,7 @@ def _read_activities(days: int = 7) -> list[dict]:
 
                 activities.append(
                     {
+                        "line_no": line_no,
                         "project": project,
                         "description": description,
                         "started_at": started_at.isoformat(),
@@ -1984,7 +1990,7 @@ def _read_activities(days: int = 7) -> list[dict]:
 
 
 def _mark_overlaps(activities: list[dict], now: datetime) -> None:
-    """Set each activity's `overlaps` to the start times of activities overlapping it.
+    """Set each activity's `overlaps` to the line numbers of activities overlapping it.
 
     Intervals that merely touch (one stops the minute the next starts) don't count.
     A running activity is treated as ending at `now`.
@@ -2002,8 +2008,8 @@ def _mark_overlaps(activities: list[dict], now: datetime) -> None:
             if other_start >= end:
                 break
             if other_end > start:
-                a["overlaps"].append(other["started_at"])
-                other["overlaps"].append(a["started_at"])
+                a["overlaps"].append(other["line_no"])
+                other["overlaps"].append(a["line_no"])
 
 
 def _get_todoist_projects() -> list[dict]:
@@ -2168,80 +2174,88 @@ def _stop_active(tracking) -> None:
             pass
 
 
+ENTRY_MOVED_ERROR = "Entry not found; the log may have changed. Refresh and try again."
+
+
 def _bartib_key(iso: str) -> str:
     """Convert an ISO datetime string to bartib file format 'YYYY-MM-DD HH:MM'."""
     return datetime.fromisoformat(iso).strftime("%Y-%m-%d %H:%M")
 
 
+def _read_bartib_lines() -> list[str] | None:
+    bartib_file = os.environ.get("BARTIB_FILE", "")
+    if not bartib_file:
+        return None
+    try:
+        with open(bartib_file) as f:
+            return f.readlines()
+    except OSError:
+        return None
+
+
+def _write_bartib_lines(lines: list[str]) -> None:
+    with open(os.environ["BARTIB_FILE"], "w") as f:
+        f.writelines(lines)
+
+
+def _bartib_time_part(line: str) -> str | None:
+    """Return the 'start[ - stop]' part of a bartib entry line, or None if it isn't one."""
+    parts = line.strip().split(" | ", 2)
+    return parts[0] if len(parts) == 3 else None
+
+
+def _is_bartib_entry_at(lines: list[str], line_no: int, started_at: str) -> bool:
+    """Whether line `line_no` is still the entry starting at `started_at`.
+
+    Activities are addressed by line number because several can share a start time;
+    the start time guards against the file having changed since the UI loaded it.
+    """
+    if not 0 <= line_no < len(lines):
+        return False
+    time_part = _bartib_time_part(lines[line_no])
+    return time_part is not None and time_part.split(" - ", 1)[0].strip() == _bartib_key(started_at)
+
+
+def _running_bartib_line_no(lines: list[str], started_at: str) -> int | None:
+    """Line number of the running (unstopped) entry that started at `started_at`."""
+    key = _bartib_key(started_at)
+    for line_no, line in enumerate(lines):
+        if _bartib_time_part(line) == key:
+            return line_no
+    return None
+
+
 def _edit_bartib_line(
+    line_no: int,
     original_started_at: str,
+    *,
     new_started_at: str,
     new_stopped_at: str,
     project: str,
     description: str,
 ) -> bool:
-    bartib_file = os.environ.get("BARTIB_FILE", "")
-    if not bartib_file:
+    lines = _read_bartib_lines()
+    if lines is None or not _is_bartib_entry_at(lines, line_no, original_started_at):
         return False
-    orig_key = _bartib_key(original_started_at)
-    new_start_str = _bartib_key(new_started_at) if new_started_at else orig_key
-    try:
-        with open(bartib_file) as f:
-            lines = f.readlines()
-    except OSError:
-        return False
-    new_lines = []
-    found = False
-    for line in lines:
-        stripped = line.strip()
-        parts = stripped.split(" | ", 2) if stripped else []
-        if len(parts) == 3:
-            time_part = parts[0]
-            line_start = time_part.split(" - ", 1)[0].strip()
-            if line_start == orig_key:
-                found = True
-                if " - " in time_part:
-                    orig_stop = time_part.split(" - ", 1)[1].strip()
-                    stop_str = _bartib_key(new_stopped_at) if new_stopped_at else orig_stop
-                    time_str = f"{new_start_str} - {stop_str}"
-                else:
-                    time_str = new_start_str
-                new_lines.append(f"{time_str} | {project} | {description}\n")
-                continue
-        new_lines.append(line)
-    if not found:
-        return False
-    with open(bartib_file, "w") as f:
-        f.writelines(new_lines)
+    time_part = _bartib_time_part(lines[line_no]) or ""
+    new_start_str = _bartib_key(new_started_at or original_started_at)
+    if " - " in time_part:
+        orig_stop = time_part.split(" - ", 1)[1].strip()
+        stop_str = _bartib_key(new_stopped_at) if new_stopped_at else orig_stop
+        time_str = f"{new_start_str} - {stop_str}"
+    else:
+        time_str = new_start_str
+    lines[line_no] = f"{time_str} | {project} | {description}\n"
+    _write_bartib_lines(lines)
     return True
 
 
-def _delete_bartib_line(original_started_at: str) -> bool:
-    bartib_file = os.environ.get("BARTIB_FILE", "")
-    if not bartib_file:
+def _delete_bartib_line(line_no: int, original_started_at: str) -> bool:
+    lines = _read_bartib_lines()
+    if lines is None or not _is_bartib_entry_at(lines, line_no, original_started_at):
         return False
-    orig_key = _bartib_key(original_started_at)
-    try:
-        with open(bartib_file) as f:
-            lines = f.readlines()
-    except OSError:
-        return False
-    new_lines = []
-    found = False
-    for line in lines:
-        stripped = line.strip()
-        parts = stripped.split(" | ", 2) if stripped else []
-        if len(parts) == 3:
-            time_part = parts[0]
-            line_start = time_part.split(" - ", 1)[0].strip()
-            if line_start == orig_key:
-                found = True
-                continue
-        new_lines.append(line)
-    if not found:
-        return False
-    with open(bartib_file, "w") as f:
-        f.writelines(new_lines)
+    del lines[line_no]
+    _write_bartib_lines(lines)
     return True
 
 
@@ -2508,50 +2522,68 @@ class TimeWebHandler(BaseHTTPRequestHandler):
             new_dt = datetime.fromisoformat(new_start)
             # Try to update the bartib file; ignore if the entry isn't there
             # (can happen when the task was started outside the web UI or via CLI stop).
-            _edit_bartib_line(
-                active.started_at.isoformat(),
-                new_start,
-                "",
-                active.project_name,
-                active.task_name,
-            )
+            started_at = active.started_at.isoformat()
+            lines = _read_bartib_lines() or []
+            line_no = _running_bartib_line_no(lines, started_at)
+            if line_no is not None:
+                _edit_bartib_line(
+                    line_no,
+                    started_at,
+                    new_started_at=new_start,
+                    new_stopped_at="",
+                    project=active.project_name,
+                    description=active.task_name,
+                )
             db.update_tracking_started_at(active, new_dt)
             self._send_json({"success": True})
         except Exception as e:
             self._send_json({"success": False, "error": str(e)}, 500)
 
     def _handle_activity_edit(self, body: dict):
+        line_no = body.get("line_no")
         original = body.get("original_started_at", "").strip()
         new_start = body.get("new_started_at", "").strip()
         new_stop = body.get("new_stopped_at", "").strip()
         project = body.get("project", "").strip()
         description = body.get("description", "").strip()
-        if not original:
-            self._send_json({"success": False, "error": "original_started_at required"}, 400)
+        if not isinstance(line_no, int) or not original:
+            self._send_json(
+                {"success": False, "error": "line_no and original_started_at required"}, 400
+            )
             return
         if not description or not project:
             self._send_json({"success": False, "error": "Project and description required"}, 400)
             return
         try:
-            ok = _edit_bartib_line(original, new_start, new_stop, project, description)
+            ok = _edit_bartib_line(
+                line_no,
+                original,
+                new_started_at=new_start,
+                new_stopped_at=new_stop,
+                project=project,
+                description=description,
+            )
             if ok:
                 self._send_json({"success": True})
             else:
-                self._send_json({"success": False, "error": "Entry not found"}, 404)
+                self._send_json({"success": False, "error": ENTRY_MOVED_ERROR}, 404)
         except Exception as e:
             self._send_json({"success": False, "error": str(e)}, 500)
 
     def _handle_activity_delete(self, body: dict):
+        line_no = body.get("line_no")
         original = body.get("original_started_at", "").strip()
-        if not original:
-            self._send_json({"success": False, "error": "original_started_at required"}, 400)
+        if not isinstance(line_no, int) or not original:
+            self._send_json(
+                {"success": False, "error": "line_no and original_started_at required"}, 400
+            )
             return
         try:
-            ok = _delete_bartib_line(original)
+            ok = _delete_bartib_line(line_no, original)
             if ok:
                 self._send_json({"success": True})
             else:
-                self._send_json({"success": False, "error": "Entry not found"}, 404)
+                self._send_json({"success": False, "error": ENTRY_MOVED_ERROR}, 404)
         except Exception as e:
             self._send_json({"success": False, "error": str(e)}, 500)
 

@@ -213,7 +213,12 @@ class TestGetOrCreateTaskNote:
 
 
 def _act(start: str, stop: str | None) -> dict:
-    return {"started_at": f"2026-01-08T{start}:00", "stopped_at": stop and f"2026-01-08T{stop}:00"}
+    _act.line_no = getattr(_act, "line_no", 0) + 1
+    return {
+        "line_no": _act.line_no,
+        "started_at": f"2026-01-08T{start}:00",
+        "stopped_at": stop and f"2026-01-08T{stop}:00",
+    }
 
 
 class TestMarkOverlaps:
@@ -224,8 +229,8 @@ class TestMarkOverlaps:
     def test_overlapping_pair_points_at_each_other(self):
         a, b = _act("09:00", "10:00"), _act("09:30", "10:30")
         web_ui._mark_overlaps([a, b], now=self.NOW)
-        assert a["overlaps"] == [b["started_at"]]
-        assert b["overlaps"] == [a["started_at"]]
+        assert a["overlaps"] == [b["line_no"]]
+        assert b["overlaps"] == [a["line_no"]]
 
     def test_back_to_back_entries_do_not_overlap(self):
         a, b = _act("09:00", "10:00"), _act("10:00", "11:00")
@@ -237,19 +242,112 @@ class TestMarkOverlaps:
         long = _act("09:00", "11:00")
         first, second = _act("09:15", "09:30"), _act("10:00", "10:30")
         web_ui._mark_overlaps([second, long, first], now=self.NOW)
-        assert sorted(long["overlaps"]) == [first["started_at"], second["started_at"]]
-        assert first["overlaps"] == [long["started_at"]]
-        assert second["overlaps"] == [long["started_at"]]
+        assert sorted(long["overlaps"]) == sorted([first["line_no"], second["line_no"]])
+        assert first["overlaps"] == [long["line_no"]]
+        assert second["overlaps"] == [long["line_no"]]
 
     def test_running_entry_ends_at_now(self):
         running = _act("11:00", None)
         before_now, after_now = _act("11:30", "11:45"), _act("12:00", "12:30")
         web_ui._mark_overlaps([running, before_now, after_now], now=self.NOW)
-        assert running["overlaps"] == [before_now["started_at"]]
+        assert running["overlaps"] == [before_now["line_no"]]
         assert after_now["overlaps"] == []
 
     def test_empty_list(self):
         web_ui._mark_overlaps([], now=self.NOW)
+
+    def test_entries_sharing_a_start_time_are_told_apart(self):
+        a, b = _act("09:00", "10:00"), _act("09:00", "10:00")
+        web_ui._mark_overlaps([a, b], now=self.NOW)
+        assert a["overlaps"] == [b["line_no"]]
+        assert b["overlaps"] == [a["line_no"]]
+
+
+SAME_START = [
+    "2026-01-08 09:00 - 2026-01-08 10:00 | meetings | Stub",
+    "",
+    "2026-01-08 09:00 - 2026-01-08 10:00 | meetings | Stub",
+    "2026-01-08 09:00 - 2026-01-08 10:00 | meetings | Stub",
+    "2026-01-08 11:00 | work | Running",
+]
+NINE = "2026-01-08T09:00:00"
+
+
+@pytest.fixture
+def bartib_file(tmp_path, monkeypatch):
+    path = tmp_path / "activities.txt"
+    path.write_text("\n".join(SAME_START) + "\n")
+    monkeypatch.setenv("BARTIB_FILE", str(path))
+    return path
+
+
+class TestEditBartibLine:
+    """Tests for _edit_bartib_line, which addresses entries by line number."""
+
+    def _edit(self, line_no, started_at=NINE, **changes):
+        fields = {"new_started_at": "", "new_stopped_at": "", "project": "meetings"}
+        fields["description"] = "Stub"
+        fields.update(changes)
+        return web_ui._edit_bartib_line(line_no, started_at, **fields)
+
+    def test_edits_only_the_addressed_entry_among_same_start_ones(self, bartib_file):
+        assert self._edit(2, description="Standup", new_stopped_at="2026-01-08T09:30")
+        lines = bartib_file.read_text().splitlines()
+        assert lines[0] == SAME_START[0]
+        assert lines[2] == "2026-01-08 09:00 - 2026-01-08 09:30 | meetings | Standup"
+        assert lines[3] == SAME_START[3]
+
+    def test_keeps_a_running_entry_running(self, bartib_file):
+        assert self._edit(4, "2026-01-08T11:00:00", new_started_at="2026-01-08T10:45")
+        assert bartib_file.read_text().splitlines()[4] == "2026-01-08 10:45 | meetings | Stub"
+
+    def test_refuses_when_line_no_longer_matches_start(self, bartib_file):
+        assert not self._edit(4)
+        assert not self._edit(1)
+        assert not self._edit(99)
+        assert bartib_file.read_text().splitlines() == SAME_START
+
+    def test_no_bartib_file_configured(self, monkeypatch):
+        monkeypatch.delenv("BARTIB_FILE", raising=False)
+        assert not self._edit(0)
+
+
+class TestDeleteBartibLine:
+    """Tests for _delete_bartib_line."""
+
+    def test_deletes_only_the_addressed_entry(self, bartib_file):
+        assert web_ui._delete_bartib_line(3, NINE)
+        assert bartib_file.read_text().splitlines() == SAME_START[:3] + SAME_START[4:]
+
+    def test_refuses_when_line_no_longer_matches_start(self, bartib_file):
+        assert not web_ui._delete_bartib_line(4, NINE)
+        assert not web_ui._delete_bartib_line(-1, NINE)
+        assert bartib_file.read_text().splitlines() == SAME_START
+
+
+class TestRunningBartibLineNo:
+    """Tests for _running_bartib_line_no."""
+
+    def test_finds_the_unstopped_entry(self):
+        assert web_ui._running_bartib_line_no(SAME_START, "2026-01-08T11:00:00") == 4
+
+    def test_ignores_stopped_entries_with_that_start(self):
+        assert web_ui._running_bartib_line_no(SAME_START, NINE) is None
+
+
+class TestReadActivitiesLineNumbers:
+    """_read_activities gives same-start entries distinct line numbers."""
+
+    def test_line_numbers_match_file_positions(self, tmp_path, monkeypatch, test_db):
+        start = (datetime.now() - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M")
+        stop = (datetime.now() - timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M")
+        path = tmp_path / "activities.txt"
+        path.write_text(f"{start} - {stop} | m | A\n\n{start} - {stop} | m | B\n")
+        monkeypatch.setenv("BARTIB_FILE", str(path))
+
+        by_desc = {a["description"]: a["line_no"] for a in web_ui._read_activities(days=7)}
+
+        assert by_desc == {"A": 0, "B": 2}
 
 
 class TestKnownTags:
