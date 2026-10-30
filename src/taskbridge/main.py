@@ -740,24 +740,50 @@ def task_done(
         raise typer.Exit(1) from None
 
 
-def _run_fzf(
-    lines: list[str],
+# Esc leaves search mode while the input is shown, and cancels the picker otherwise
+_FZF_ESC = (
+    'esc:transform:[ "$FZF_INPUT_STATE" = hidden ] && echo abort '
+    '|| echo "hide-input+rebind({keys})"'
+)
+
+
+def fzf_args(
     *,
     prompt: str,
     header: str | None = None,
+    multi: bool = False,
+    browse_keys: bool = False,
     extra_args: tuple[str, ...] = (),
-) -> list[str] | None:
+) -> list[str]:
+    """The fzf command line for a picker.
+
+    With `browse_keys` the picker opens with the search input hidden: j/k move,
+    x marks (when `multi`), / shows the input, and Esc hides it again or cancels.
+    """
+    args = ["fzf", "--ansi", "--height", "50%", "--layout=reverse", "--border", "--prompt", prompt]
+    if multi:
+        args.append("--multi")
+    if browse_keys:
+        keys = "j,k,x,/" if multi else "j,k,/"
+        binds = ["j:down", "k:up", f"/:show-input+unbind({keys})"]
+        if multi:
+            binds.append("x:toggle")
+        args += ["--no-input", "--bind", ",".join(binds), "--bind", _FZF_ESC.format(keys=keys)]
+        mark = " · x mark" if multi else ""
+        hint = f"j/k move{mark} · / search · enter select · esc back/cancel"
+        header = f"{header}\n{hint}" if header else hint
+    if header:
+        args += ["--header", header]
+    return [*args, *extra_args]
+
+
+def _run_fzf(lines: list[str], args: list[str]) -> list[str] | None:
     """Show `lines` in fzf; returns the chosen lines, or None if the user cancelled."""
     if subprocess.run(["which", "fzf"], capture_output=True).returncode != 0:
         typer.echo("❌ fzf not found. Install it with: brew install fzf", err=True)
         raise typer.Exit(1) from None
-    args = ["fzf", "--ansi", "--height", "50%", "--layout=reverse", "--border", "--prompt", prompt]
-    if header:
-        args += ["--header", header]
     # stdin gets the data, stdout captures selection, stderr shows UI
-    result = subprocess.run(
-        [*args, *extra_args], input="\n".join(lines), text=True, stdout=subprocess.PIPE
-    )
+    result = subprocess.run(args, input="\n".join(lines), text=True, stdout=subprocess.PIPE)
     if result.returncode != 0:
         return None
     return [line for line in result.stdout.splitlines() if line]
@@ -768,6 +794,7 @@ def pick_task_with_fzf(
     tasks: list[TodoistTask],
     prompt: str = "Select task: ",
     header: str | None = None,
+    browse_keys: bool = False,
 ) -> str | None:
     """Let the user pick one of `tasks` with fzf, with an optional header above the list.
 
@@ -807,7 +834,7 @@ def pick_task_with_fzf(
         line = " | ".join(parts)
         fzf_lines.append(line)
 
-    chosen = _run_fzf(fzf_lines, prompt=prompt, header=header)
+    chosen = _run_fzf(fzf_lines, fzf_args(prompt=prompt, header=header, browse_keys=browse_keys))
     # Task ID is the first field before |
     return chosen[0].split("|")[0].strip() if chosen else None
 
@@ -3591,12 +3618,12 @@ def _pick_backlog_tasks(repo: Path) -> list[Path]:
         f"{t.id:<9} {t.status:<12} {'🔗' if t.parent else '  '} {t.title}\t{t.path}"
         for t in summaries
     ]
-    chosen = _run_fzf(
-        lines,
+    args = fzf_args(
         prompt="Backlog tasks: ",
-        header="TAB selects several, ENTER links them (🔗 = already linked)",
+        header="🔗 = already linked",
+        multi=True,
+        browse_keys=True,
         extra_args=(
-            "--multi",
             "--height",
             "80%",
             "--delimiter",
@@ -3609,6 +3636,7 @@ def _pick_backlog_tasks(repo: Path) -> list[Path]:
             "right,55%,wrap",
         ),
     )
+    chosen = _run_fzf(lines, args)
     if not chosen:
         raise typer.Exit(1) from None
     return [Path(line.split("\t", 1)[1]) for line in chosen]
@@ -3666,7 +3694,9 @@ def backlog_link(
     api = TodoistAPI()
     if to is None:
         header = "Parent for:\n" + "\n".join(f"  {t.id}  {t.title}" for t in tasks)
-        to = pick_task_with_fzf(api, _open_tasks_current_first(api), "Parent: ", header)
+        to = pick_task_with_fzf(
+            api, _open_tasks_current_first(api), "Parent: ", header, browse_keys=True
+        )
         if to is None:
             raise typer.Exit(1) from None
     parent_task = _resolve_parent(api, to)
