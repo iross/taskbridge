@@ -1,11 +1,11 @@
 ---
 id: TASK-45
 title: Archive linked backlog tasks into their parent Todoist task's note
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-16 17:56'
-updated_date: '2026-10-30 15:18'
+updated_date: '2026-10-30 15:20'
 labels:
   - obsidian
   - backlog
