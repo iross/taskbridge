@@ -86,6 +86,12 @@ marker comments; re-runs skip it unless `--force`. The note's frontmatter gets `
 and listed. Repo files are never changed. A note whose project was moved to `40 Archive/` is
 still found there.
 
+Each section also gets a **Provenance** list of the commits whose messages mention the task ID
+(`task-9`, `TASK-09`, `(task-9)` all count; `task-90` and `task-9.1` don't), oldest first, plus
+any GitHub pull requests containing them. Merges and commits that only touch `backlog/` are left
+out. Commits link to GitHub once pushed; PRs need the `gh` CLI. Put the task ID in commit
+messages (e.g. `Add archive command (task-45)`) for this to find them.
+
 ## Development
 
 ```bash

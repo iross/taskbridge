@@ -15,6 +15,7 @@ from .bartib_integration import BartibIntegration
 from .config import TEMPLATE_KINDS
 from .config import config as config_manager
 from .database import TaskTimeTracking, TodoistNoteMapping, db, is_real_todoist_task_id
+from .provenance import RepoHistory
 from .task_notes import resolve_project_info
 from .todoist_api import TodoistAPI, TodoistProject, TodoistTask
 
@@ -3663,13 +3664,14 @@ def backlog_archive_cmd(
         return
 
     api = TodoistAPI()
+    history = None if dry_run else RepoHistory(repo)
     unlinked: list[str] = []
     failed = 0
     for path in paths:
         label = path.name.split(" ", 1)[0].upper()
         try:
             outcome = backlog_archive.archive_task(
-                path, repo.name, api, dry_run=dry_run, force=force
+                path, repo.name, api, dry_run=dry_run, force=force, history=history
             )
         except (backlog_archive.ArchiveError, backlog.BacklogError) as e:
             typer.echo(f"❌ {label}: {e}", err=True)
@@ -3684,6 +3686,8 @@ def backlog_archive_cmd(
             note = _vault_relative(outcome.note) if outcome.note else ""
             typer.echo(f"📦 {label} → {note} ({outcome.action})")
 
+    for warning in history.warnings if history else []:
+        typer.echo(f"⚠️  {warning}")
     if unlinked:
         typer.echo(
             f"⚠️  Not linked to a Todoist task, skipped: {', '.join(unlinked)}\n"

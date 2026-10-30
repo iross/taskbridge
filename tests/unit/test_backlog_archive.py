@@ -1,5 +1,6 @@
 """Tests for archiving backlog tasks into their parent Todoist task's note (ADR-004)."""
 
+import subprocess
 from unittest.mock import MagicMock
 
 import pytest
@@ -352,3 +353,52 @@ class TestArchiveCommand:
 
         assert result.exit_code == 1
         assert "Name the tasks to archive or pass --done" in result.output
+
+
+class TestArchiveProvenance:
+    def git_repo(self, repo):
+        def git(*args):
+            subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+
+        repo.mkdir(parents=True, exist_ok=True)
+        git("init", "-q")
+        git("config", "user.email", "t@example.com")
+        git("config", "user.name", "T")
+        (repo / "picker.js").write_text("x\n")
+        git("add", "picker.js")
+        git("commit", "-q", "-m", "Add project picker (task-32)")
+
+    def test_section_lists_commits_mentioning_the_task(self, env):
+        repo, vault, _, _ = env
+        self.git_repo(repo)
+        write(repo, "task-32 - X.md", MODERN)
+
+        result = archive(repo, "32")
+
+        assert "origin is not a GitHub remote" in result.output
+        text = (vault / "10 Projects" / "Picker" / "Web UI polish.md").read_text()
+        provenance = text.split("### Provenance\n\n", 1)[1]
+        assert provenance.startswith("- `")
+        assert provenance.split("\n", 1)[0].endswith(" Add project picker (task-32)")
+        assert text.index("### Provenance") < text.index("<!-- /backlog:myrepo/TASK-32 -->")
+
+    def test_no_matching_commits_no_provenance(self, env):
+        repo, vault, _, _ = env
+        self.git_repo(repo)
+        write(repo, "task-33 - Y.md", MODERN.replace("TASK-32", "TASK-33"))
+
+        assert archive(repo, "33").exit_code == 0
+
+        assert (
+            "Provenance" not in (vault / "10 Projects" / "Picker" / "Web UI polish.md").read_text()
+        )
+
+    def test_dry_run_reads_no_history(self, env, monkeypatch):
+        repo, _, _, _ = env
+        write(repo, "task-32 - X.md", MODERN)
+        history = MagicMock()
+        monkeypatch.setattr("taskbridge.main.RepoHistory", history)
+
+        archive(repo, "32", "--dry-run")
+
+        history.assert_not_called()
