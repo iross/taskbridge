@@ -559,6 +559,21 @@ class Database:
             conn.commit()
             return cursor.rowcount > 0
 
+    def update_tracking_labels(
+        self, tracking: TaskTimeTracking, project_name: str, task_name: str
+    ) -> bool:
+        """Update the project and description of a tracking record."""
+        if not tracking.id:
+            return False
+        sql = (
+            "UPDATE task_time_tracking "
+            "SET project_name = ?, task_name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+        )
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(sql, (project_name, task_name, tracking.id))
+            conn.commit()
+            return cursor.rowcount > 0
+
     # ============================================================================
     # Jira Sync Methods
     # ============================================================================
