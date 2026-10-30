@@ -6,6 +6,7 @@ references key is rewritten here directly, leaving the rest of the file as is.
 """
 
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 from . import frontmatter
@@ -99,3 +100,27 @@ def set_parent_task(path: Path, todoist_id: str) -> list[str]:
     lines, body = _frontmatter(path)
     path.write_text(frontmatter.join(frontmatter.set_list(lines, "references", references), body))
     return references
+
+
+@dataclass
+class TaskSummary:
+    """What a picker or message needs to show about a backlog task."""
+
+    id: str
+    title: str
+    status: str
+    parent: str | None
+    path: Path
+
+
+def summarize(path: Path) -> TaskSummary:
+    """ID, title, status and parent Todoist task of a backlog task file."""
+    meta, _ = read_task(path)
+    parents = [todoist_task_id(str(ref)) for ref in meta.get("references") or []]
+    return TaskSummary(
+        id=str(meta.get("id") or path.name.split(" ", 1)[0]).upper(),
+        title=str(meta.get("title", "")),
+        status=str(meta.get("status", "")),
+        parent=next((parent for parent in parents if parent), None),
+        path=path,
+    )

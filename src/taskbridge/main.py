@@ -740,19 +740,40 @@ def task_done(
         raise typer.Exit(1) from None
 
 
+def _run_fzf(
+    lines: list[str],
+    *,
+    prompt: str,
+    header: str | None = None,
+    extra_args: tuple[str, ...] = (),
+) -> list[str] | None:
+    """Show `lines` in fzf; returns the chosen lines, or None if the user cancelled."""
+    if subprocess.run(["which", "fzf"], capture_output=True).returncode != 0:
+        typer.echo("❌ fzf not found. Install it with: brew install fzf", err=True)
+        raise typer.Exit(1) from None
+    args = ["fzf", "--ansi", "--height", "50%", "--layout=reverse", "--border", "--prompt", prompt]
+    if header:
+        args += ["--header", header]
+    # stdin gets the data, stdout captures selection, stderr shows UI
+    result = subprocess.run(
+        [*args, *extra_args], input="\n".join(lines), text=True, stdout=subprocess.PIPE
+    )
+    if result.returncode != 0:
+        return None
+    return [line for line in result.stdout.splitlines() if line]
+
+
 def pick_task_with_fzf(
-    api: TodoistAPI, tasks: list[TodoistTask], prompt: str = "Select task: "
+    api: TodoistAPI,
+    tasks: list[TodoistTask],
+    prompt: str = "Select task: ",
+    header: str | None = None,
 ) -> str | None:
-    """Let the user pick one of `tasks` with fzf.
+    """Let the user pick one of `tasks` with fzf, with an optional header above the list.
 
     Returns:
         The chosen task's ID, or None if the user cancelled.
     """
-    fzf_check = subprocess.run(["which", "fzf"], capture_output=True)
-    if fzf_check.returncode != 0:
-        typer.echo("❌ fzf not found. Install it with: brew install fzf", err=True)
-        raise typer.Exit(1) from None
-
     # Format tasks for fzf: ID | Title | Project | Labels | Due
     fzf_lines = []
     project_cache = {}
@@ -786,31 +807,9 @@ def pick_task_with_fzf(
         line = " | ".join(parts)
         fzf_lines.append(line)
 
-    # Pipe to fzf
-    fzf_input = "\n".join(fzf_lines)
-
-    # Run fzf with proper terminal access
-    # stdin gets the data, stdout captures selection, stderr shows UI
-    result = subprocess.run(
-        [
-            "fzf",
-            "--ansi",
-            "--height",
-            "50%",
-            "--layout=reverse",
-            "--border",
-            "--prompt",
-            prompt,
-        ],
-        input=fzf_input,
-        text=True,
-        stdout=subprocess.PIPE,
-    )
-
-    if result.returncode != 0:
-        return None
+    chosen = _run_fzf(fzf_lines, prompt=prompt, header=header)
     # Task ID is the first field before |
-    return result.stdout.strip().split("|")[0].strip()
+    return chosen[0].split("|")[0].strip() if chosen else None
 
 
 @task_app.command("select")
@@ -3582,35 +3581,50 @@ def ongoing_start(alias: str):
     typer.echo(f"   📁 {bartib_project}")
 
 
-@backlog_app.command("link")
-def backlog_link(
-    task_id: str = typer.Argument(..., help="Backlog task ID, e.g. TASK-49 or 49"),
-    parent: str | None = typer.Argument(
-        None, help="Parent Todoist task ID or URL. Pick one with fzf when omitted."
-    ),
-    repo: Path | None = typer.Option(  # noqa: B008
-        None, "--repo", help="Repository containing backlog/ (default: current directory)"
-    ),
-):
-    """Set a backlog task's parent Todoist task (stored as a URL in its references)."""
-    try:
-        task_file = backlog.find_task_file(repo or Path.cwd(), task_id)
-    except backlog.BacklogError as e:
-        typer.echo(f"❌ {e}", err=True)
+def _pick_backlog_tasks(repo: Path) -> list[Path]:
+    """Multi-select backlog tasks with fzf, newest first, previewing each task file."""
+    summaries = [
+        backlog.summarize(path)
+        for path in sorted(backlog.task_files(repo), key=backlog.task_number, reverse=True)
+    ]
+    lines = [
+        f"{t.id:<9} {t.status:<12} {'🔗' if t.parent else '  '} {t.title}\t{t.path}"
+        for t in summaries
+    ]
+    chosen = _run_fzf(
+        lines,
+        prompt="Backlog tasks: ",
+        header="TAB selects several, ENTER links them (🔗 = already linked)",
+        extra_args=(
+            "--multi",
+            "--height",
+            "80%",
+            "--delimiter",
+            "\t",
+            "--with-nth",
+            "1",
+            "--preview",
+            "cat {2}",
+            "--preview-window",
+            "right,55%,wrap",
+        ),
+    )
+    if not chosen:
         raise typer.Exit(1) from None
+    return [Path(line.split("\t", 1)[1]) for line in chosen]
 
-    if not config_manager.get_todoist_token():
-        typer.echo("❌ Todoist not configured. Run 'taskbridge config todoist' first.", err=True)
-        raise typer.Exit(1) from None
-    api = TodoistAPI()
 
-    if parent is None:
-        open_tasks = [t for t in api.get_tasks() if not t.is_completed]
-        parent = pick_task_with_fzf(api, open_tasks, prompt=f"Parent of {task_id}: ")
-        if parent is None:
-            raise typer.Exit(1) from None
+def _open_tasks_current_first(api: TodoistAPI) -> list[TodoistTask]:
+    """Open Todoist tasks, with the currently time-tracked one (if any) first."""
+    active = db.get_active_tracking()
+    current = active.todoist_task_id if active else None
+    tasks = [t for t in api.get_tasks() if not t.is_completed]
+    return sorted(tasks, key=lambda t: t.id != current)
+
+
+def _resolve_parent(api: TodoistAPI, parent: str) -> TodoistTask:
+    """The Todoist task named by an ID or URL; exits with a message if it can't be found."""
     parent_id = backlog.todoist_task_id(parent) or parent.strip()
-
     try:
         parent_task = api.get_task(parent_id)
     except requests.exceptions.RequestException as e:
@@ -3619,13 +3633,52 @@ def backlog_link(
     if parent_task is None:
         typer.echo(f"❌ Todoist task {parent_id} not found.", err=True)
         raise typer.Exit(1) from None
+    return parent_task
 
+
+@backlog_app.command("link")
+def backlog_link(
+    task_ids: list[str] | None = typer.Argument(  # noqa: B008
+        None, help="Backlog task IDs, e.g. TASK-49 50. Pick several with fzf when omitted."
+    ),
+    to: str | None = typer.Option(
+        None, "--to", help="Parent Todoist task ID or URL. Pick one with fzf when omitted."
+    ),
+    repo: Path | None = typer.Option(  # noqa: B008
+        None, "--repo", help="Repository containing backlog/ (default: current directory)"
+    ),
+):
+    """Set the parent Todoist task of one or more backlog tasks (a URL in their references)."""
+    if not config_manager.get_todoist_token():
+        typer.echo("❌ Todoist not configured. Run 'taskbridge config todoist' first.", err=True)
+        raise typer.Exit(1) from None
+    repo = repo or Path.cwd()
     try:
-        backlog.set_parent_task(task_file, parent_task.id)
+        if task_ids:
+            paths = [backlog.find_task_file(repo, task_id) for task_id in task_ids]
+        else:
+            paths = _pick_backlog_tasks(repo)
+        tasks = [backlog.summarize(path) for path in dict.fromkeys(paths)]
     except backlog.BacklogError as e:
         typer.echo(f"❌ {e}", err=True)
         raise typer.Exit(1) from None
-    typer.echo(f"🔗 {task_file.name.split(' ', 1)[0].upper()} → {parent_task.content}")
+
+    api = TodoistAPI()
+    if to is None:
+        header = "Parent for:\n" + "\n".join(f"  {t.id}  {t.title}" for t in tasks)
+        to = pick_task_with_fzf(api, _open_tasks_current_first(api), "Parent: ", header)
+        if to is None:
+            raise typer.Exit(1) from None
+    parent_task = _resolve_parent(api, to)
+
+    for task in tasks:
+        try:
+            backlog.set_parent_task(task.path, parent_task.id)
+        except backlog.BacklogError as e:
+            typer.echo(f"❌ {e}", err=True)
+            raise typer.Exit(1) from None
+        typer.echo(f"🔗 {task.id}  {task.title}")
+    typer.echo(f"   → {parent_task.content}")
     typer.echo(f"   {backlog.todoist_task_url(parent_task.id)}")
 
 
