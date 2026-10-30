@@ -1,8 +1,7 @@
 """Tests for web_ui.py helpers backing the activity-note feature (task-42).
 
 Covers the pure-Python pieces that join bartib activity rows to their Todoist
-task (`_tracking_task_ids`, `_read_activities`) and the shared note
-get-or-create logic (`_get_or_create_task_note`), without spinning up the
+task (`_tracking_task_ids`, `_read_activities`), without spinning up the
 actual HTTP server.
 """
 
@@ -145,72 +144,6 @@ class TestReadActivities:
 
         assert activities[0]["todoist_task_id"] == ""
         assert activities[0]["note_url"] is None
-
-
-class TestGetOrCreateTaskNote:
-    """Tests for _get_or_create_task_note."""
-
-    def test_returns_existing_mapping_without_calling_todoist(self, test_db, monkeypatch):
-        test_db.create_todoist_note_mapping(
-            TodoistNoteMapping(
-                todoist_task_id="task-123",
-                todoist_project_id="proj-1",
-                note_path="/vault/note.md",
-                obsidian_url="obsidian://open?vault=v&file=note.md",
-            )
-        )
-        api_cls = MagicMock()
-        monkeypatch.setattr(web_ui, "TodoistAPI", api_cls)
-
-        url, is_new = web_ui._get_or_create_task_note("task-123")
-
-        assert url == "obsidian://open?vault=v&file=note.md"
-        assert is_new is False
-        api_cls.assert_not_called()
-
-    def test_creates_note_and_mapping_when_none_exists(self, test_db, monkeypatch):
-        task = MagicMock(content="Write docs", project_id="proj-1", labels=["backend"])
-        api_instance = MagicMock()
-        api_instance.get_task.return_value = task
-        api_cls = MagicMock(return_value=api_instance)
-        monkeypatch.setattr(web_ui, "TodoistAPI", api_cls)
-
-        import taskbridge.config as config_module
-        import taskbridge.main as main_module
-
-        monkeypatch.setattr(
-            main_module, "resolve_project_info", lambda project_id, api: ("taskbridge", "acme")
-        )
-        note_path = MagicMock()
-        note_path.name = "Write docs.md"
-        config_mock = MagicMock()
-        config_mock.create_task_note.return_value = note_path
-        config_mock.generate_obsidian_url.return_value = "obsidian://open?vault=v&file=note.md"
-        monkeypatch.setattr(config_module, "config", config_mock)
-
-        url, is_new = web_ui._get_or_create_task_note("task-123")
-
-        assert url == "obsidian://open?vault=v&file=note.md"
-        assert is_new is True
-        config_mock.create_task_note.assert_called_once_with(
-            project_name="taskbridge",
-            task_title="Write docs",
-            client="acme",
-            status="backlog",
-            tags=["backend"],
-        )
-        api_instance.create_comment.assert_called_once()
-        mapping = test_db.get_todoist_note_by_task_id("task-123")
-        assert mapping is not None
-        assert mapping.obsidian_url == "obsidian://open?vault=v&file=note.md"
-
-    def test_raises_when_task_not_found(self, test_db, monkeypatch):
-        api_instance = MagicMock()
-        api_instance.get_task.return_value = None
-        monkeypatch.setattr(web_ui, "TodoistAPI", MagicMock(return_value=api_instance))
-
-        with pytest.raises(ValueError, match="Task not found"):
-            web_ui._get_or_create_task_note("task-missing")
 
 
 def _act(start: str, stop: str | None) -> dict:

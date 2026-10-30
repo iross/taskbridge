@@ -10,11 +10,12 @@ from pathlib import Path
 import requests
 import typer
 
-from . import backlog, inbox
+from . import backlog, backlog_archive, inbox
 from .bartib_integration import BartibIntegration
 from .config import TEMPLATE_KINDS
 from .config import config as config_manager
 from .database import TaskTimeTracking, TodoistNoteMapping, db, is_real_todoist_task_id
+from .task_notes import resolve_project_info
 from .todoist_api import TodoistAPI, TodoistProject, TodoistTask
 
 # Main app
@@ -2030,37 +2031,6 @@ def sanitize_project_name(name: str) -> str:
     return cleaned if cleaned else "general"
 
 
-def resolve_project_info(project_id: str, api: "TodoistAPI") -> tuple[str, str]:
-    """Return (project_name, client_name) for a Todoist project.
-
-    Manual config mappings take precedence. Otherwise the top-level ancestor
-    in the project hierarchy becomes the client and the direct project becomes
-    the folder name.
-    """
-    manual = config_manager.get_todoist_project_mappings().get(project_id)
-    if manual:
-        return manual["folder"], manual.get("client", "")
-
-    project = api.get_project(project_id)
-    if not project:
-        return "Unknown", ""
-
-    if not project.parent_id:
-        return project.name, ""
-
-    # Walk up to the root ancestor — that becomes the client
-    current = project
-    client_name = project.name
-    while current.parent_id:
-        parent = api.get_project(current.parent_id)
-        if not parent:
-            break
-        client_name = parent.name
-        current = parent
-
-    return project.name, client_name
-
-
 def build_bartib_project(project: str, client: str = "") -> str:
     """Build bartib project name encoding client and project.
 
@@ -3656,6 +3626,71 @@ def backlog_link(
         raise typer.Exit(1) from None
     typer.echo(f"🔗 {task_file.name.split(' ', 1)[0].upper()} → {parent_task.content}")
     typer.echo(f"   {backlog.todoist_task_url(parent_task.id)}")
+
+
+def _vault_relative(note: Path) -> str:
+    vault = Path(config_manager.get_obsidian_vault_path()).expanduser()
+    return str(note.relative_to(vault)) if note.is_relative_to(vault) else str(note)
+
+
+@backlog_app.command("archive")
+def backlog_archive_cmd(
+    task_ids: list[str] | None = typer.Argument(  # noqa: B008
+        None, help="Backlog task IDs to archive, e.g. TASK-45 46"
+    ),
+    done: bool = typer.Option(False, "--done", help="Archive every task with status Done"),
+    repo: Path | None = typer.Option(  # noqa: B008
+        None, "--repo", help="Repository containing backlog/ (default: current directory)"
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would happen; write nothing"),
+    force: bool = typer.Option(False, "--force", help="Replace sections already archived"),
+):
+    """Append backlog tasks to their parent Todoist task's Obsidian note (ADR-004)."""
+    if bool(task_ids) == done:
+        typer.echo("❌ Name the tasks to archive or pass --done (not both).", err=True)
+        raise typer.Exit(1) from None
+    if not config_manager.get_todoist_token() or not config_manager.get_obsidian_vault_path():
+        typer.echo("❌ Configure Todoist and Obsidian first (taskbridge config ...).", err=True)
+        raise typer.Exit(1) from None
+    repo = (repo or Path.cwd()).resolve()
+    try:
+        paths = backlog_archive.select_tasks(repo, task_ids or [], done)
+    except backlog.BacklogError as e:
+        typer.echo(f"❌ {e}", err=True)
+        raise typer.Exit(1) from None
+    if not paths:
+        typer.echo("No Done tasks to archive.")
+        return
+
+    api = TodoistAPI()
+    unlinked: list[str] = []
+    failed = 0
+    for path in paths:
+        label = path.name.split(" ", 1)[0].upper()
+        try:
+            outcome = backlog_archive.archive_task(
+                path, repo.name, api, dry_run=dry_run, force=force
+            )
+        except (backlog_archive.ArchiveError, backlog.BacklogError) as e:
+            typer.echo(f"❌ {label}: {e}", err=True)
+            failed += 1
+            continue
+        if outcome.action == "unlinked":
+            unlinked.append(label)
+        elif outcome.action == "exists":
+            note = _vault_relative(outcome.note) if outcome.note else ""
+            typer.echo(f"⏭️  {label} already in {note} (--force replaces it)")
+        else:
+            note = _vault_relative(outcome.note) if outcome.note else ""
+            typer.echo(f"📦 {label} → {note} ({outcome.action})")
+
+    if unlinked:
+        typer.echo(
+            f"⚠️  Not linked to a Todoist task, skipped: {', '.join(unlinked)}\n"
+            "   Link them with: taskbridge backlog link <TASK-ID>"
+        )
+    if failed:
+        raise typer.Exit(1) from None
 
 
 if __name__ == "__main__":

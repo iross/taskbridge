@@ -434,6 +434,14 @@ class Config:
 
         return project_dir
 
+    def task_note_path(self, project_name: str, task_title: str) -> Path:
+        """Where create_task_note puts a task's note, without creating anything."""
+        vault_path = self.get_obsidian_vault_path()
+        if not vault_path:
+            raise ValueError("Obsidian vault path not configured")
+        safe_title = "".join(c for c in task_title if c.isalnum() or c in (" ", "-", "_")).rstrip()
+        return Path(vault_path) / "10 Projects" / project_name / f"{safe_title}.md"
+
     def create_task_note(
         self,
         project_name: str,
@@ -446,11 +454,8 @@ class Config:
         if tags is None:
             tags = []
 
-        project_dir = self.create_project_directory(project_name)
-
-        # Sanitize filename
-        safe_title = "".join(c for c in task_title if c.isalnum() or c in (" ", "-", "_")).rstrip()
-        note_path = project_dir / f"{safe_title}.md"
+        self.create_project_directory(project_name)
+        note_path = self.task_note_path(project_name, task_title)
 
         # Create frontmatter
         frontmatter = {

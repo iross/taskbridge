@@ -70,6 +70,22 @@ taskbridge backlog link 49 <id> --repo ~/projects/other
 Linking replaces any earlier Todoist link and keeps other references. It also works on tasks in
 `backlog/completed/`, which the backlog CLI itself cannot edit.
 
+Archiving appends linked tasks to the parent Todoist task's Obsidian note (creating the note if
+needed), so the note collects the design and implementation notes of everything done for it:
+
+```bash
+taskbridge backlog archive --done --dry-run   # show where each Done task would go
+taskbridge backlog archive --done             # append every Done task
+taskbridge backlog archive TASK-45 TASK-46    # or name tasks
+taskbridge backlog archive TASK-45 --force    # replace a section archived earlier
+```
+
+Each task becomes a `## <repo> <TASK-ID> — <title>` section between `<!-- backlog:<repo>/<ID> -->`
+marker comments; re-runs skip it unless `--force`. The note's frontmatter gets `backlog_tasks`
+(`<repo>/<ID>` entries) and the tags `backlog` and `backlog/<repo>`. Unlinked tasks are skipped
+and listed. Repo files are never changed. A note whose project was moved to `40 Archive/` is
+still found there.
+
 ## Development
 
 ```bash

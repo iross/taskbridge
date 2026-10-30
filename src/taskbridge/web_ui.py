@@ -10,8 +10,9 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from . import task_notes
 from .bartib_integration import BartibIntegration
-from .database import TodoistNoteMapping, db, is_real_todoist_task_id
+from .database import db, is_real_todoist_task_id
 from .todoist_api import TodoistAPI
 
 HTML = """<!DOCTYPE html>
@@ -1876,45 +1877,9 @@ HTML = """<!DOCTYPE html>
 
 
 def _get_or_create_task_note(task_id: str) -> tuple[str, bool]:
-    """Return (obsidian_url, is_new) for the note mapped to a Todoist task.
-
-    Creates the note, its Todoist mapping, and a linking task comment when no
-    mapping exists yet; otherwise returns the existing note unchanged.
-    """
-    existing = db.get_todoist_note_by_task_id(task_id)
-    if existing:
-        return existing.obsidian_url, False
-
-    from .config import config as config_manager
-    from .main import resolve_project_info
-
-    api = TodoistAPI()
-    task = api.get_task(task_id)
-    if not task:
-        raise ValueError("Task not found in Todoist")
-
-    project_name, client_name = resolve_project_info(task.project_id, api)
-    note_path = config_manager.create_task_note(
-        project_name=project_name,
-        task_title=task.content,
-        client=client_name,
-        status="backlog",
-        tags=task.labels,
-    )
-    obsidian_url = config_manager.generate_obsidian_url(project_name, note_path.name)
-
-    mapping = TodoistNoteMapping(
-        todoist_task_id=task_id,
-        todoist_project_id=task.project_id,
-        note_path=str(note_path),
-        obsidian_url=obsidian_url,
-    )
-    db.create_todoist_note_mapping(mapping)
-
-    with contextlib.suppress(Exception):
-        api.create_comment(task_id, f"📝 Obsidian note: [Open Note]({obsidian_url})")
-
-    return obsidian_url, True
+    """Return (obsidian_url, is_new) for the note mapped to a Todoist task."""
+    mapping, is_new = task_notes.get_or_create_task_note(task_id)
+    return mapping.obsidian_url, is_new
 
 
 def _tracking_task_ids(cutoff: datetime) -> dict[str, str]:
@@ -2485,7 +2450,7 @@ class TimeWebHandler(BaseHTTPRequestHandler):
             task_labels: list[str] = []
             if todoist_task_id and not is_meeting:
                 try:
-                    from .main import resolve_project_info
+                    from .task_notes import resolve_project_info
 
                     api = TodoistAPI()
                     task_obj = api.get_task(todoist_task_id)
@@ -2501,7 +2466,7 @@ class TimeWebHandler(BaseHTTPRequestHandler):
                     bartib_project = project_raw or "taskbridge"
             elif project_id:
                 try:
-                    from .main import resolve_project_info
+                    from .task_notes import resolve_project_info
 
                     api = TodoistAPI()
                     project_name, client_name = resolve_project_info(project_id, api)
