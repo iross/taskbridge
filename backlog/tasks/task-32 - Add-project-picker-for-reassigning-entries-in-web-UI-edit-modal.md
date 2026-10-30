@@ -1,11 +1,11 @@
 ---
 id: TASK-32
 title: Add project picker for reassigning entries in web UI edit modal
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-07-07 16:39'
-updated_date: '2026-10-30 14:10'
+updated_date: '2026-10-30 14:29'
 labels:
   - web-ui
   - time-tracking
