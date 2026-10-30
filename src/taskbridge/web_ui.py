@@ -1108,7 +1108,7 @@ HTML = """<!DOCTYPE html>
       if (pd.text && c.projects[proj].descs.indexOf(pd.text) < 0) c.projects[proj].descs.push(pd.text);
       for (var li = 0; li < pd.tags.length; li++) {
         var lbl = pd.tags[li];
-        if (!agg.labels[lbl]) { agg.labels[lbl] = 0; agg.labelOrder.push(lbl); }
+        if (agg.labelOrder.indexOf(lbl) < 0) { agg.labels[lbl] = 0; agg.labelOrder.push(lbl); }
         agg.labels[lbl] += secs;
       }
     }
