@@ -107,7 +107,9 @@ class TodoistAPI:
 
         except requests.exceptions.HTTPError as e:
             self.logger.error(f"HTTP error: {e}")
-            self.logger.error(f"Response: {e.response.text if e.response else 'No response'}")
+            self.logger.error(
+                f"Response: {e.response.text if e.response is not None else 'No response'}"
+            )
             raise
         except requests.exceptions.RequestException as e:
             self.logger.error(f"Request failed: {e}")
@@ -337,7 +339,8 @@ class TodoistAPI:
                 is_completed=data.get("is_completed", False),
             )
         except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 404:
+            # 400 is Todoist's answer to a malformed ID, which can't name any task either
+            if e.response.status_code in (400, 404):
                 return None
             raise
         except Exception as e:

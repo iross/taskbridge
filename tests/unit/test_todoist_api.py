@@ -3,6 +3,7 @@
 from unittest.mock import Mock, patch
 
 import pytest
+import requests
 
 from taskbridge.todoist_api import TodoistAPI, TodoistTask
 
@@ -46,3 +47,37 @@ class TestTodoistAPI:
         assert task.id == "123"
         assert task.content == "Test Task"
         assert task.labels == []  # Default value from __post_init__
+
+
+def http_response(status, body=b"{}"):
+    response = requests.Response()
+    response.status_code = status
+    response._content = body
+    response.url = "https://api.todoist.com/api/v1/tasks/x"
+    return response
+
+
+class TestGetTask:
+    """get_task returns None for IDs that cannot name a task, and raises otherwise."""
+
+    @pytest.fixture
+    def api(self):
+        return TodoistAPI(token="test-token")
+
+    def test_returns_task(self, api):
+        body = b'{"id": "6gRP", "content": "Parent", "project_id": "p1"}'
+        api.session.request = Mock(return_value=http_response(200, body))
+
+        assert api.get_task("6gRP").content == "Parent"
+
+    @pytest.mark.parametrize("status", [400, 404])
+    def test_unknown_or_malformed_id_is_none(self, api, status):
+        api.session.request = Mock(return_value=http_response(status))
+
+        assert api.get_task("NOPE123") is None
+
+    def test_other_errors_raise(self, api):
+        api.session.request = Mock(return_value=http_response(500))
+
+        with pytest.raises(requests.exceptions.HTTPError):
+            api.get_task("6gRP")
