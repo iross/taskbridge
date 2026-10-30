@@ -3,11 +3,11 @@ id: TASK-49
 title: >-
   Add taskbridge backlog link command to set a backlog task's parent Todoist
   task
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-30 15:03'
-updated_date: '2026-10-30 15:09'
+updated_date: '2026-10-30 15:10'
 labels:
   - backlog
   - todoist
