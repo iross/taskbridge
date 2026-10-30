@@ -548,6 +548,7 @@ HTML = """<!DOCTYPE html>
       <label for="description">Description</label>
       <input id="description" type="text" list="desc-list" placeholder="What are you working on?">
       <datalist id="desc-list"></datalist>
+      <datalist id="project-list"></datalist>
       <div id="description-tags" class="tag-picker" data-for="description"></div>
     </div>
     <div class="form-time-row">
@@ -1305,7 +1306,39 @@ HTML = """<!DOCTYPE html>
         html += '</optgroup>';
       }
       sel.innerHTML = html;
+      renderProjectList(data);
     });
+  }
+
+  // Bartib project strings for the edit modal: recent ones first, then each Todoist
+  // project as the string a start on it would log, labelled with its Todoist path.
+  function renderProjectList(data) {
+    var seen = {};
+    var html = '';
+    var recent = data.recent || [];
+    for (var i = 0; i < recent.length; i++) {
+      seen[recent[i]] = true;
+      html += '<option value="' + esc(recent[i]) + '" label="recent">';
+    }
+    var todoist = data.todoist || [];
+    for (var i = 0; i < todoist.length; i++) {
+      var p = todoist[i];
+      if (seen[p.bartib]) continue;
+      seen[p.bartib] = true;
+      html += '<option value="' + esc(p.bartib) + '" label="' + esc(p.name) + '">';
+    }
+    document.getElementById('project-list').innerHTML = html;
+  }
+
+  // A prefilled datalist input only suggests options matching its text, so clear it on
+  // focus to show the whole list, and put the old value back if nothing was entered.
+  function clearForPicker(input) {
+    input.placeholder = input.value;
+    input.value = '';
+  }
+
+  function restoreIfEmpty(input) {
+    if (!input.value.trim()) input.value = input.placeholder;
   }
 
   var currentTasks = [];
@@ -1568,7 +1601,8 @@ HTML = """<!DOCTYPE html>
       '<div><label>Start</label><input type="datetime-local" id="em-started_at" value="' +
         esc(a.started_at.slice(0,16)) + '"></div>' +
       stopField +
-      '<div><label>Project</label><input type="text" id="em-project" value="' + esc(a.project) + '"></div>' +
+      '<div><label>Project</label><input type="text" id="em-project" list="project-list"' +
+        ' onfocus="clearForPicker(this)" onblur="restoreIfEmpty(this)" value="' + esc(a.project) + '"></div>' +
       '<div><label>Description</label><input type="text" id="em-description" oninput="renderTagPicker(this.id)" value="' + esc(a.description) + '"></div>' +
       '<div id="em-description-tags" class="tag-picker" data-for="em-description"></div>';
     renderTagPicker('em-description');
@@ -2012,10 +2046,27 @@ def _mark_overlaps(activities: list[dict], now: datetime) -> None:
                 other["overlaps"].append(a["line_no"])
 
 
+def _todoist_bartib_project(project, root, manual: dict[str, dict[str, str]]) -> str:
+    """The bartib project string a start on this Todoist project produces.
+
+    Mirrors main.resolve_project_info: a manual mapping wins, otherwise the
+    root ancestor is the client and the project itself is the folder.
+    """
+    mapping = manual.get(project.id)
+    if mapping:
+        return _build_bartib_project(mapping["folder"], mapping.get("client", ""))
+    if project is root:
+        return _build_bartib_project(project.name)
+    return _build_bartib_project(project.name, root.name)
+
+
 def _get_todoist_projects() -> list[dict]:
+    from .config import config as config_manager
+
     try:
         api = TodoistAPI()
         projects = api.get_projects()
+        manual = config_manager.get_todoist_project_mappings()
 
         children_of: dict[str, list] = {}
         roots = []
@@ -2033,14 +2084,15 @@ def _get_todoist_projects() -> list[dict]:
 
         result: list[dict] = []
 
-        def walk(p, ancestors: list[str]) -> None:
+        def walk(p, root, ancestors: list[str]) -> None:
             path = " / ".join([*ancestors, p.name])
-            result.append({"id": p.id, "name": path})
+            bartib = _todoist_bartib_project(p, root, manual)
+            result.append({"id": p.id, "name": path, "bartib": bartib})
             for child in children_of.get(p.id, []):
-                walk(child, [*ancestors, p.name])
+                walk(child, root, [*ancestors, p.name])
 
         for root in roots:
-            walk(root, [])
+            walk(root, root, [])
 
         return result
     except Exception:
@@ -2248,6 +2300,23 @@ def _edit_bartib_line(
     lines[line_no] = f"{time_str} | {project} | {description}\n"
     _write_bartib_lines(lines)
     return True
+
+
+def _sync_active_tracking(
+    original_started_at: str, *, new_started_at: str, project: str, description: str
+) -> None:
+    """Carry an edit of the running bartib entry over to the active tracking record.
+
+    The current-activity panel and `time stop` read the record, not the bartib file.
+    """
+    active = db.get_active_tracking()
+    if not active or not active.started_at:
+        return
+    if _bartib_key(active.started_at.isoformat()) != _bartib_key(original_started_at):
+        return
+    db.update_tracking_labels(active, project, description)
+    if new_started_at and _bartib_key(new_started_at) != _bartib_key(original_started_at):
+        db.update_tracking_started_at(active, datetime.fromisoformat(new_started_at))
 
 
 def _delete_bartib_line(line_no: int, original_started_at: str) -> bool:
@@ -2555,6 +2624,7 @@ class TimeWebHandler(BaseHTTPRequestHandler):
             self._send_json({"success": False, "error": "Project and description required"}, 400)
             return
         try:
+            was_running = _running_bartib_line_no(_read_bartib_lines() or [], original) == line_no
             ok = _edit_bartib_line(
                 line_no,
                 original,
@@ -2563,6 +2633,10 @@ class TimeWebHandler(BaseHTTPRequestHandler):
                 project=project,
                 description=description,
             )
+            if ok and was_running:
+                _sync_active_tracking(
+                    original, new_started_at=new_start, project=project, description=description
+                )
             if ok:
                 self._send_json({"success": True})
             else:

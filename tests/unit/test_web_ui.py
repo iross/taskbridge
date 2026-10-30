@@ -13,6 +13,7 @@ import pytest
 
 from taskbridge import web_ui
 from taskbridge.database import Database, TodoistNoteMapping
+from taskbridge.todoist_api import TodoistProject
 
 
 @pytest.fixture
@@ -411,3 +412,133 @@ class TestKnownTags:
         assert status == 500
         assert payload["tags"] == []
         assert "Could not read bartib log" in payload["error"]
+
+
+class TestTodoistProjectBartibStrings:
+    """/api/projects gives each Todoist project the bartib string a start would log."""
+
+    @pytest.fixture
+    def todoist(self, monkeypatch):
+        api = MagicMock()
+        monkeypatch.setattr(web_ui, "TodoistAPI", lambda: api)
+        cfg = MagicMock()
+        cfg.get_todoist_project_mappings.return_value = {}
+        monkeypatch.setattr("taskbridge.config.config", cfg)
+        return api, cfg.get_todoist_project_mappings
+
+    def _project(self, pid, name, parent=None, **kw):
+        return TodoistProject(id=pid, name=name, color="", parent_id=parent, **kw)
+
+    def test_root_ancestor_is_client_at_any_depth(self, todoist):
+        api, _ = todoist
+        api.get_projects.return_value = [
+            self._project("1", "PATh"),
+            self._project("2", "Monthly Report", parent="1"),
+            self._project("3", "Draft 🚧", parent="2"),
+            self._project("9", "Inbox", is_inbox_project=True),
+        ]
+
+        projects = web_ui._get_todoist_projects()
+
+        assert [(p["name"], p["bartib"]) for p in projects] == [
+            ("PATh", "PATh"),
+            ("PATh / Monthly Report", "PATh::Monthly-Report"),
+            ("PATh / Monthly Report / Draft 🚧", "PATh::Draft"),
+        ]
+
+    def test_manual_mapping_wins(self, todoist):
+        api, mappings = todoist
+        api.get_projects.return_value = [
+            self._project("1", "PATh"),
+            self._project("2", "Monthly Report", parent="1"),
+        ]
+        mappings.return_value = {"2": {"client": "OSG", "folder": "Reports"}}
+
+        projects = web_ui._get_todoist_projects()
+
+        assert projects[1]["bartib"] == "OSG::Reports"
+
+    def test_todoist_failure_returns_empty_list(self, todoist):
+        api, _ = todoist
+        api.get_projects.side_effect = RuntimeError("offline")
+
+        assert web_ui._get_todoist_projects() == []
+
+
+class TestActivityEditReassignsProject:
+    """Editing an entry's project in the modal, for stopped and running entries."""
+
+    LOG = [
+        "2026-01-08 09:00 - 2026-01-08 10:00 | Inbox | Report",
+        "2026-01-08 11:00 | Inbox | Report",
+    ]
+
+    @pytest.fixture
+    def log(self, tmp_path, monkeypatch):
+        path = tmp_path / "activities.txt"
+        path.write_text("\n".join(self.LOG) + "\n")
+        monkeypatch.setenv("BARTIB_FILE", str(path))
+        return path
+
+    @pytest.fixture
+    def running(self, test_db):
+        test_db.create_tracking_record(
+            todoist_task_id="t1",
+            project_name="Inbox",
+            task_name="Report",
+            started_at=datetime(2026, 1, 8, 11, 0, 42),
+        )
+        return test_db
+
+    def _edit(self, line_no, started_at, **changes):
+        handler = web_ui.TimeWebHandler.__new__(web_ui.TimeWebHandler)
+        handler._send_json = MagicMock()
+        body = {
+            "line_no": line_no,
+            "original_started_at": started_at,
+            "new_started_at": "",
+            "new_stopped_at": "",
+            "project": "PATh::Monthly_Report",
+            "description": "Report",
+        }
+        body.update(changes)
+        handler._handle_activity_edit(body)
+        return handler._send_json.call_args.args[0]
+
+    def test_stopped_entry_moves_without_touching_running_record(self, log, running):
+        assert self._edit(0, "2026-01-08T09:00:00")["success"]
+
+        lines = log.read_text().splitlines()
+        assert lines[0] == "2026-01-08 09:00 - 2026-01-08 10:00 | PATh::Monthly_Report | Report"
+        assert running.get_active_tracking().project_name == "Inbox"
+
+    def test_running_entry_moves_in_log_and_tracking_record(self, log, running):
+        assert self._edit(1, "2026-01-08T11:00:00", description="Report #draft")["success"]
+
+        assert (
+            log.read_text().splitlines()[1]
+            == "2026-01-08 11:00 | PATh::Monthly_Report | Report #draft"
+        )
+        active = running.get_active_tracking()
+        assert (active.project_name, active.task_name) == ("PATh::Monthly_Report", "Report #draft")
+        assert active.started_at == datetime(2026, 1, 8, 11, 0, 42)
+
+    def test_running_entry_start_change_reaches_tracking_record(self, log, running):
+        self._edit(1, "2026-01-08T11:00:00", new_started_at="2026-01-08T10:45")
+
+        assert running.get_active_tracking().started_at == datetime(2026, 1, 8, 10, 45)
+
+    def test_no_active_record_still_edits_log(self, log, test_db):
+        assert self._edit(1, "2026-01-08T11:00:00")["success"]
+
+        assert log.read_text().splitlines()[1] == "2026-01-08 11:00 | PATh::Monthly_Report | Report"
+
+    def test_stopped_entry_sharing_running_start_leaves_record_alone(self, log, running):
+        log.write_text(
+            "2026-01-08 11:00 - 2026-01-08 11:05 | Inbox | Report\n"
+            "2026-01-08 11:00 | Inbox | Report\n"
+        )
+
+        assert self._edit(0, "2026-01-08T11:00:00")["success"]
+
+        assert running.get_active_tracking().project_name == "Inbox"
