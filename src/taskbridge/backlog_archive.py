@@ -11,6 +11,7 @@ from pathlib import Path
 from . import backlog, frontmatter, task_notes
 from .config import config as config_manager
 from .database import db
+from .provenance import RepoHistory
 from .todoist_api import TodoistAPI
 
 PROJECTS_DIR = "10 Projects"
@@ -117,7 +118,7 @@ def section_key(repo_name: str, task: BacklogTask) -> str:
     return f"{repo_name}/{task.id}"
 
 
-def render_section(task: BacklogTask, repo_name: str) -> str:
+def render_section(task: BacklogTask, repo_name: str, provenance: str | None = None) -> str:
     """The markdown appended to the parent note for one task."""
     key = section_key(repo_name, task)
     details = [task.status or "no status"]
@@ -131,6 +132,8 @@ def render_section(task: BacklogTask, repo_name: str) -> str:
     parts.append(" · ".join(details))
     for heading, text in task.sections:
         parts += ["", f"### {heading}", "", text]
+    if provenance:
+        parts += ["", "### Provenance", "", provenance]
     parts += ["", f"<!-- /backlog:{key} -->"]
     return "\n".join(parts) + "\n"
 
@@ -179,7 +182,9 @@ def has_section(note: Path, key: str) -> bool:
     return _section_span(body, key) is not None
 
 
-def archive_into_note(note: Path, task: BacklogTask, repo_name: str, force: bool) -> str:
+def archive_into_note(
+    note: Path, task: BacklogTask, repo_name: str, force: bool, provenance: str | None = None
+) -> str:
     """Append (or with `force`, replace) the task's section in the note.
 
     Returns "added", "replaced", or "exists" when the section is already there
@@ -191,7 +196,7 @@ def archive_into_note(note: Path, task: BacklogTask, repo_name: str, force: bool
         span = _section_span(body, key)
         if span and not force:
             return "exists"
-        section = render_section(task, repo_name)
+        section = render_section(task, repo_name, provenance)
         if span:
             body = body[: span[0]] + section + body[span[1] :]
         else:
@@ -243,7 +248,13 @@ def _parent_note(parent: str, api: TodoistAPI, vault: Path, dry_run: bool) -> tu
 
 
 def archive_task(
-    path: Path, repo_name: str, api: TodoistAPI, *, dry_run: bool, force: bool
+    path: Path,
+    repo_name: str,
+    api: TodoistAPI,
+    *,
+    dry_run: bool,
+    force: bool,
+    history: RepoHistory | None = None,
 ) -> Outcome:
     """Archive one backlog task file into its parent's note.
 
@@ -257,7 +268,8 @@ def archive_task(
     vault = Path(config_manager.get_obsidian_vault_path()).expanduser()
     note, exists = _parent_note(parent, api, vault, dry_run)
     if not dry_run:
-        return Outcome(archive_into_note(note, task, repo_name, force), note)
+        provenance = history.markdown(task.id) if history else None
+        return Outcome(archive_into_note(note, task, repo_name, force, provenance), note)
     if not exists:
         return Outcome("would create note and add", note)
     if has_section(note, section_key(repo_name, task)):

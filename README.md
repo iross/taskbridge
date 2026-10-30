@@ -62,10 +62,15 @@ The link is the Todoist task URL in the backlog task's `references`, so it survi
 edit` and many backlog tasks can share one parent.
 
 ```bash
-taskbridge backlog link TASK-49                 # pick the parent Todoist task with fzf
-taskbridge backlog link TASK-49 6gRPQ6W25287Ccx7 # or give its ID or pasted URL
-taskbridge backlog link 49 <id> --repo ~/projects/other
+taskbridge backlog link                          # pick backlog tasks (TAB for several), then the parent
+taskbridge backlog link TASK-49 50               # name the tasks, pick the parent
+taskbridge backlog link 49 50 --to 6gRPQ6W25287Ccx7  # or give the parent's ID or pasted URL
+taskbridge backlog link 49 --repo ~/projects/other
 ```
+
+The backlog picker lists the repo's tasks newest first with status and a 🔗 on ones already
+linked, and previews each task. The parent picker shows which backlog tasks you are linking and
+lists the Todoist task you are currently time-tracking first.
 
 Linking replaces any earlier Todoist link and keeps other references. It also works on tasks in
 `backlog/completed/`, which the backlog CLI itself cannot edit.
@@ -85,6 +90,12 @@ marker comments; re-runs skip it unless `--force`. The note's frontmatter gets `
 (`<repo>/<ID>` entries) and the tags `backlog` and `backlog/<repo>`. Unlinked tasks are skipped
 and listed. Repo files are never changed. A note whose project was moved to `40 Archive/` is
 still found there.
+
+Each section also gets a **Provenance** list of the commits whose messages mention the task ID
+(`task-9`, `TASK-09`, `(task-9)` all count; `task-90` and `task-9.1` don't), oldest first, plus
+any GitHub pull requests containing them. Merges and commits that only touch `backlog/` are left
+out. Commits link to GitHub once pushed; PRs need the `gh` CLI. Put the task ID in commit
+messages (e.g. `Add archive command (task-45)`) for this to find them.
 
 ## Development
 
