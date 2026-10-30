@@ -1,11 +1,11 @@
 ---
 id: TASK-50
 title: Make backlog link show what is being linked and link several tasks at once
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-30 15:32'
-updated_date: '2026-10-30 15:34'
+updated_date: '2026-10-30 15:38'
 labels:
   - backlog
   - todoist
