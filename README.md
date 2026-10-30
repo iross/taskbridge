@@ -55,6 +55,21 @@ taskbridge inbox open <index>           # launch the item's native URI (obsidian
 
 `inbox open` shells out to the macOS `open` command, so it only works on a Mac.
 
+## Linking backlog tasks to Todoist tasks (ADR-004)
+
+A [backlog.md](https://github.com/MrLesk/Backlog.md) task can name the Todoist task it is part of.
+The link is the Todoist task URL in the backlog task's `references`, so it survives `backlog task
+edit` and many backlog tasks can share one parent.
+
+```bash
+taskbridge backlog link TASK-49                 # pick the parent Todoist task with fzf
+taskbridge backlog link TASK-49 6gRPQ6W25287Ccx7 # or give its ID or pasted URL
+taskbridge backlog link 49 <id> --repo ~/projects/other
+```
+
+Linking replaces any earlier Todoist link and keeps other references. It also works on tasks in
+`backlog/completed/`, which the backlog CLI itself cannot edit.
+
 ## Development
 
 ```bash

@@ -106,3 +106,30 @@ class TestTaskSelectCommand:
 
         assert result.exit_code == 0
         assert result.stdout.strip() == "42"
+
+    @patch("taskbridge.main.subprocess.run")
+    @patch("taskbridge.main.TodoistAPI")
+    @patch("taskbridge.main.config_manager")
+    def test_cancel_exits_quietly(self, mock_cfg, mock_api_class, mock_run):
+        mock_cfg.get_todoist_token.return_value = "token"
+        mock_api_class.return_value.get_tasks.return_value = [make_task()]
+        mock_run.side_effect = [Mock(returncode=0), Mock(returncode=130, stdout="")]
+
+        result = CliRunner().invoke(app, ["task", "select"])
+
+        assert result.exit_code == 1
+        assert "Error" not in result.output
+
+    @patch("taskbridge.main.subprocess.run")
+    @patch("taskbridge.main.TodoistAPI")
+    @patch("taskbridge.main.config_manager")
+    def test_missing_fzf_says_so_once(self, mock_cfg, mock_api_class, mock_run):
+        mock_cfg.get_todoist_token.return_value = "token"
+        mock_api_class.return_value.get_tasks.return_value = [make_task()]
+        mock_run.return_value = Mock(returncode=1)
+
+        result = CliRunner().invoke(app, ["task", "select"])
+
+        assert result.exit_code == 1
+        assert "fzf not found" in result.output
+        assert "Error" not in result.output

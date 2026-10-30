@@ -7,9 +7,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+import requests
 import typer
 
-from . import inbox
+from . import backlog, inbox
 from .bartib_integration import BartibIntegration
 from .config import TEMPLATE_KINDS
 from .config import config as config_manager
@@ -34,6 +35,7 @@ meeting_app = typer.Typer(help="Meeting time tracking commands")
 ongoing_app = typer.Typer(help="Ongoing work (email, catchup, ...) time tracking commands")
 export_app = typer.Typer(help="Export commands")
 inbox_app = typer.Typer(help="Unified inbox commands")
+backlog_app = typer.Typer(help="backlog.md task commands")
 
 app.add_typer(config_app, name="config")
 app.add_typer(task_app, name="task")
@@ -45,6 +47,7 @@ app.add_typer(meeting_app, name="meeting")
 app.add_typer(ongoing_app, name="ongoing")
 app.add_typer(export_app, name="export")
 app.add_typer(inbox_app, name="inbox")
+app.add_typer(backlog_app, name="backlog")
 
 
 # ============================================================================
@@ -735,6 +738,79 @@ def task_done(
         raise typer.Exit(1) from None
 
 
+def pick_task_with_fzf(
+    api: TodoistAPI, tasks: list[TodoistTask], prompt: str = "Select task: "
+) -> str | None:
+    """Let the user pick one of `tasks` with fzf.
+
+    Returns:
+        The chosen task's ID, or None if the user cancelled.
+    """
+    fzf_check = subprocess.run(["which", "fzf"], capture_output=True)
+    if fzf_check.returncode != 0:
+        typer.echo("❌ fzf not found. Install it with: brew install fzf", err=True)
+        raise typer.Exit(1) from None
+
+    # Format tasks for fzf: ID | Title | Project | Labels | Due
+    fzf_lines = []
+    project_cache = {}
+
+    for task in tasks:
+        # Get project name
+        project_name = ""
+        if task.project_id:
+            if task.project_id not in project_cache:
+                project_obj = api.get_project(task.project_id)
+                project_cache[task.project_id] = project_obj.name if project_obj else "Unknown"
+            project_name = project_cache[task.project_id]
+
+        # Get labels
+        labels_str = ", ".join(task.labels) if task.labels else ""
+
+        # Get due date
+        due_str = ""
+        if task.due:
+            due_str = task.due.get("date", "")
+
+        # Format line with all requested info (using simple separators, no emojis)
+        parts = [task.id, format_task_priority(task.content, task.priority)]
+        if project_name:
+            parts.append(f"[{project_name}]")
+        if labels_str:
+            parts.append(f"({labels_str})")
+        if due_str:
+            parts.append(f"due:{due_str}")
+
+        line = " | ".join(parts)
+        fzf_lines.append(line)
+
+    # Pipe to fzf
+    fzf_input = "\n".join(fzf_lines)
+
+    # Run fzf with proper terminal access
+    # stdin gets the data, stdout captures selection, stderr shows UI
+    result = subprocess.run(
+        [
+            "fzf",
+            "--ansi",
+            "--height",
+            "50%",
+            "--layout=reverse",
+            "--border",
+            "--prompt",
+            prompt,
+        ],
+        input=fzf_input,
+        text=True,
+        stdout=subprocess.PIPE,
+    )
+
+    if result.returncode != 0:
+        return None
+    # Task ID is the first field before |
+    return result.stdout.strip().split("|")[0].strip()
+
+
 @task_app.command("select")
 def task_select(
     project: str | None = typer.Option(
@@ -750,12 +826,6 @@ def task_select(
     """Select a task using fzf and output its ID."""
     if not config_manager.get_todoist_token():
         typer.echo("❌ Todoist not configured. Run 'taskbridge config todoist' first.", err=True)
-        raise typer.Exit(1) from None
-
-    # Check if fzf is installed
-    fzf_check = subprocess.run(["which", "fzf"], capture_output=True)
-    if fzf_check.returncode != 0:
-        typer.echo("❌ fzf not found. Install it with: brew install fzf", err=True)
         raise typer.Exit(1) from None
 
     try:
@@ -792,71 +862,15 @@ def task_select(
             typer.echo("No tasks found.", err=True)
             raise typer.Exit(1) from None
 
-        # Format tasks for fzf: ID | Title | Project | Labels | Due
-        fzf_lines = []
-        project_cache = {}
-
-        for task in tasks:
-            # Get project name
-            project_name = ""
-            if task.project_id:
-                if task.project_id not in project_cache:
-                    project_obj = api.get_project(task.project_id)
-                    project_cache[task.project_id] = project_obj.name if project_obj else "Unknown"
-                project_name = project_cache[task.project_id]
-
-            # Get labels
-            labels_str = ", ".join(task.labels) if task.labels else ""
-
-            # Get due date
-            due_str = ""
-            if task.due:
-                due_str = task.due.get("date", "")
-
-            # Format line with all requested info (using simple separators, no emojis)
-            parts = [task.id, format_task_priority(task.content, task.priority)]
-            if project_name:
-                parts.append(f"[{project_name}]")
-            if labels_str:
-                parts.append(f"({labels_str})")
-            if due_str:
-                parts.append(f"due:{due_str}")
-
-            line = " | ".join(parts)
-            fzf_lines.append(line)
-
-        # Pipe to fzf
-        fzf_input = "\n".join(fzf_lines)
-
-        # Run fzf with proper terminal access
-        # stdin gets the data, stdout captures selection, stderr shows UI
-        result = subprocess.run(
-            [
-                "fzf",
-                "--ansi",
-                "--height",
-                "50%",
-                "--layout=reverse",
-                "--border",
-                "--prompt",
-                "Select task: ",
-            ],
-            input=fzf_input,
-            text=True,
-            stdout=subprocess.PIPE,
-        )
-
-        if result.returncode != 0:
-            # User cancelled
+        task_id = pick_task_with_fzf(api, tasks)
+        if task_id is None:
             raise typer.Exit(1) from None
-
-        # Extract task ID (first field before |)
-        selected_line = result.stdout.strip()
-        task_id = selected_line.split("|")[0].strip()
 
         # Output just the task ID
         typer.echo(task_id)
 
+    except typer.Exit:
+        raise
     except Exception as e:
         typer.echo(f"❌ Error: {e}", err=True)
         raise typer.Exit(1) from None
@@ -3595,6 +3609,53 @@ def ongoing_start(alias: str):
     config_manager.increment_template_usage("ongoing", alias)
     typer.echo(f"▶️  Ongoing: {description}")
     typer.echo(f"   📁 {bartib_project}")
+
+
+@backlog_app.command("link")
+def backlog_link(
+    task_id: str = typer.Argument(..., help="Backlog task ID, e.g. TASK-49 or 49"),
+    parent: str | None = typer.Argument(
+        None, help="Parent Todoist task ID or URL. Pick one with fzf when omitted."
+    ),
+    repo: Path | None = typer.Option(  # noqa: B008
+        None, "--repo", help="Repository containing backlog/ (default: current directory)"
+    ),
+):
+    """Set a backlog task's parent Todoist task (stored as a URL in its references)."""
+    try:
+        task_file = backlog.find_task_file(repo or Path.cwd(), task_id)
+    except backlog.BacklogError as e:
+        typer.echo(f"❌ {e}", err=True)
+        raise typer.Exit(1) from None
+
+    if not config_manager.get_todoist_token():
+        typer.echo("❌ Todoist not configured. Run 'taskbridge config todoist' first.", err=True)
+        raise typer.Exit(1) from None
+    api = TodoistAPI()
+
+    if parent is None:
+        open_tasks = [t for t in api.get_tasks() if not t.is_completed]
+        parent = pick_task_with_fzf(api, open_tasks, prompt=f"Parent of {task_id}: ")
+        if parent is None:
+            raise typer.Exit(1) from None
+    parent_id = backlog.todoist_task_id(parent) or parent.strip()
+
+    try:
+        parent_task = api.get_task(parent_id)
+    except requests.exceptions.RequestException as e:
+        typer.echo(f"❌ Could not look up Todoist task {parent_id}: {e}", err=True)
+        raise typer.Exit(1) from None
+    if parent_task is None:
+        typer.echo(f"❌ Todoist task {parent_id} not found.", err=True)
+        raise typer.Exit(1) from None
+
+    try:
+        backlog.set_parent_task(task_file, parent_task.id)
+    except backlog.BacklogError as e:
+        typer.echo(f"❌ {e}", err=True)
+        raise typer.Exit(1) from None
+    typer.echo(f"🔗 {task_file.name.split(' ', 1)[0].upper()} → {parent_task.content}")
+    typer.echo(f"   {backlog.todoist_task_url(parent_task.id)}")
 
 
 if __name__ == "__main__":
