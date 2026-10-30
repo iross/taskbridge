@@ -248,7 +248,10 @@ class TestBacklogLinkCommand:
         assert result.exit_code == 0, result.output
         cmd, lines = fake.calls[0]
         header = cmd[cmd.index("--header") + 1]
-        assert header == "Parent for:\n  TASK-10  Alpha\n  TASK-11  Beta"
+        assert header.startswith(
+            "Parent for:\n  TASK-10  Alpha\n  TASK-11  Beta\nj/k move · / search"
+        )
+        assert "--no-input" in cmd and "--multi" not in cmd
         assert lines[0].startswith("PARENT1 | ") and lines[1].startswith("OTHER | ")
 
     def test_backlog_picker_multi_selects_newest_first(self, tmp_path, api):
@@ -264,7 +267,8 @@ class TestBacklogLinkCommand:
 
         assert result.exit_code == 0, result.output
         cmd, lines = fake.calls[0]
-        assert "--multi" in cmd
+        assert "--multi" in cmd and "--no-input" in cmd
+        assert "x mark" in cmd[cmd.index("--header") + 1]
         assert cmd[cmd.index("--preview") + 1] == "cat {2}"
         assert [line.split()[0] for line in lines] == ["TASK-12", "TASK-11", "TASK-10"]
         assert lines[1].split("\t")[0] == f"{'TASK-11':<9} {'To Do':<12} 🔗 Beta"

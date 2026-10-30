@@ -51,6 +51,7 @@ class TestTaskSelectCommand:
         assert result.exit_code == 0
         fzf_call_args = mock_run.call_args_list[1].args[0]
         assert "--ansi" in fzf_call_args
+        assert "--no-input" not in fzf_call_args
 
     @patch("taskbridge.main.subprocess.run")
     @patch("taskbridge.main.TodoistAPI")
