@@ -1,11 +1,11 @@
 ---
 id: TASK-51
 title: Use j/k/x/slash keys in backlog link pickers
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-30 15:42'
-updated_date: '2026-10-30 15:44'
+updated_date: '2026-10-30 15:45'
 labels:
   - backlog
 dependencies: []
