@@ -100,6 +100,21 @@ any GitHub pull requests containing them. Merges and commits that only touch `ba
 out. Commits link to GitHub once pushed; PRs need the `gh` CLI. Put the task ID in commit
 messages (e.g. `Add archive command (task-45)`) for this to find them.
 
+## Time reports
+
+```bash
+taskbridge time report                    # today
+taskbridge time report --week             # current Mon–Sun week
+taskbridge time report --month            # current month
+taskbridge time report --month 10         # most recent October (not in the future)
+taskbridge time report --month 2025-10    # an exact month
+taskbridge time report --from 2026-10-05 --to 2026-10-09
+```
+
+A bare month number is the latest such month not after the current one: in November 2026, `10` is
+October 2026 and `12` is December 2025. `--month` cannot be combined with the other range options.
+Multi-day reports start with a per-day total and flag past days with no time logged.
+
 ## Merging similar task names in time history
 
 Time entries for one piece of work often drift into slightly different descriptions ("Review PR",

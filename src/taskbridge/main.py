@@ -9,6 +9,7 @@ from pathlib import Path
 
 import requests
 import typer
+from typer.core import TyperCommand
 
 from . import backlog, backlog_archive, inbox
 from .bartib_integration import BartibIntegration
@@ -3250,12 +3251,62 @@ def time_cleanup(
         typer.echo(f"   Backup: {backup}")
 
 
-@time_app.command("report")
+def month_range(spec: str, today: datetime) -> tuple[datetime, datetime]:
+    """First and last day of the month named by `spec`, relative to `today`.
+
+    `spec` is "current", a month number ("10"), or "YYYY-MM". A bare month number
+    means its most recent occurrence that is not after the current month, so in
+    November 2026 "10" is October 2026 and "12" is December 2025.
+
+    Raises:
+        ValueError: If `spec` is none of those forms or the month is not 1-12.
+    """
+    import calendar
+
+    spec = spec.strip()
+    if spec == "current":
+        year, month = today.year, today.month
+    elif re.fullmatch(r"\d{4}-\d{1,2}", spec):
+        year, month = (int(part) for part in spec.split("-"))
+    elif re.fullmatch(r"\d{1,2}", spec):
+        month = int(spec)
+        year = today.year if month <= today.month else today.year - 1
+    else:
+        raise ValueError(f"Invalid month {spec!r}: use a number 1-12 or YYYY-MM")
+    if not 1 <= month <= 12:
+        raise ValueError(f"Invalid month {spec!r}: month must be between 1 and 12")
+    last_day = calendar.monthrange(year, month)[1]
+    return datetime(year, month, 1), datetime(year, month, last_day)
+
+
+class _BareMonthCommand(TyperCommand):
+    """Lets `--month` stand alone: with no value (end of line or another option next) it means
+    the current month. Typer has no optional-value options, so the value is filled in before
+    parsing."""
+
+    def parse_args(self, ctx, args):
+        args = list(args)
+        for i, arg in enumerate(args):
+            if arg == "--month" and (i + 1 == len(args) or args[i + 1].startswith("-")):
+                args.insert(i + 1, "current")
+        return super().parse_args(ctx, args)
+
+
+@time_app.command("report", cls=_BareMonthCommand)
 def time_report(
     date: str | None = typer.Option(None, "--date", help="Report for a specific date (YYYY-MM-DD)"),
     from_date: str | None = typer.Option(None, "--from", help="Start date (YYYY-MM-DD)"),
     to_date: str | None = typer.Option(None, "--to", help="End date (YYYY-MM-DD, inclusive)"),
     week: bool = typer.Option(False, "--week", help="Report for the current Mon–Sun week"),
+    month: str | None = typer.Option(
+        None,
+        "--month",
+        metavar="[MONTH]",
+        help=(
+            "Report for a whole month: bare --month is the current month, --month 10 the most "
+            "recent October (not in the future), --month 2025-10 an exact month"
+        ),
+    ),
 ):
     """Daily summary report grouped by client and project."""
     from datetime import timedelta
@@ -3263,7 +3314,12 @@ def time_report(
     try:
         today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
 
-        if week:
+        if month is not None and (week or date or from_date or to_date):
+            raise ValueError("--month cannot be combined with --week, --date, --from or --to")
+
+        if month is not None:
+            start, end_day = month_range(month, today)
+        elif week:
             start = today - timedelta(days=today.weekday())  # Monday
             end_day = start + timedelta(days=6)  # Sunday
         elif from_date or to_date:

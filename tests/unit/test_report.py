@@ -449,3 +449,93 @@ class TestParseBartibFile:
 
         with pytest.raises(RuntimeError, match="BARTIB_FILE"):
             parse_bartib_file(datetime(2026, 2, 25, 0, 0), datetime(2026, 2, 26, 0, 0))
+
+
+# ============================================================================
+# time report --month
+# ============================================================================
+
+
+class TestMonthRange:
+    TODAY = datetime(2026, 11, 2)
+
+    @pytest.mark.parametrize(
+        "spec,first,last",
+        [
+            ("current", (2026, 11, 1), (2026, 11, 30)),
+            ("11", (2026, 11, 1), (2026, 11, 30)),
+            ("10", (2026, 10, 1), (2026, 10, 31)),
+            ("01", (2026, 1, 1), (2026, 1, 31)),
+            ("12", (2025, 12, 1), (2025, 12, 31)),  # December has not happened yet in 2026
+            ("2025-02", (2025, 2, 1), (2025, 2, 28)),
+            ("2024-2", (2024, 2, 1), (2024, 2, 29)),
+            ("2027-03", (2027, 3, 1), (2027, 3, 31)),  # an explicit year is taken as given
+        ],
+    )
+    def test_resolves_month(self, spec, first, last):
+        from taskbridge.main import month_range
+
+        assert month_range(spec, self.TODAY) == (datetime(*first), datetime(*last))
+
+    @pytest.mark.parametrize("spec", ["0", "13", "oct", "2026-13", "2026-00", "10-2026", ""])
+    def test_rejects_invalid(self, spec):
+        from taskbridge.main import month_range
+
+        with pytest.raises(ValueError, match="Invalid month"):
+            month_range(spec, self.TODAY)
+
+
+class TestTimeReportMonthOption:
+    @pytest.fixture
+    def log(self, tmp_path, monkeypatch):
+        from datetime import timedelta
+
+        now = datetime.now()
+        this_month = now.replace(day=1, hour=9, minute=0, second=0, microsecond=0)
+        prev_month = (this_month - timedelta(days=1)).replace(day=1)
+        path = tmp_path / "activities.bartib"
+        path.write_text(
+            f"{this_month:%Y-%m-%d %H:%M} - {this_month:%Y-%m-%d} 10:00 | "
+            "CHTC::site | This month work\n"
+            f"{prev_month:%Y-%m-%d %H:%M} - {prev_month:%Y-%m-%d} 10:30 | "
+            "CHTC::site | Last month work\n"
+        )
+        monkeypatch.setenv("BARTIB_FILE", str(path))
+        return prev_month
+
+    def run(self, *args):
+        from typer.testing import CliRunner
+
+        from taskbridge.main import app
+
+        return CliRunner().invoke(app, ["time", "report", *args])
+
+    def test_bare_month_is_current_month(self, log):
+        result = self.run("--month")
+        assert result.exit_code == 0, result.output
+        assert "This month work" in result.output
+        assert "Last month work" not in result.output
+
+    def test_month_number_selects_that_month(self, log):
+        result = self.run("--month", str(log.month))
+        assert result.exit_code == 0, result.output
+        assert "Last month work" in result.output
+        assert "This month work" not in result.output
+        assert "1h 30m" in result.output
+
+    def test_month_lists_every_day_of_the_month(self, log):
+        import calendar
+
+        result = self.run("--month", f"{log.year}-{log.month}")
+        days = calendar.monthrange(log.year, log.month)[1]
+        assert f"{log.year}-{log.month:02d}-{days:02d}" in result.output
+
+    def test_invalid_month_fails_with_message(self, log):
+        result = self.run("--month", "13")
+        assert result.exit_code == 1
+        assert "Invalid month" in result.output
+
+    def test_cannot_combine_with_other_ranges(self, log):
+        result = self.run("--month", "--week")
+        assert result.exit_code == 1
+        assert "cannot be combined" in result.output
