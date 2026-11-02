@@ -123,6 +123,30 @@ times and project; only the description changes. The log is copied to
 `<file>.bak-<timestamp>` first. Decisions are not remembered, so a rejected group is offered
 again on the next run.
 
+### Merging by hand
+
+String similarity cannot find duplicates that were worded differently ("Fabaid Sync with Tony and
+Nova" / "Fabaid chat with Nova and Tony"). After the suggestions, `time cleanup` offers to browse
+every task name by hand; `--manual` skips the suggestions and goes straight there:
+
+```bash
+taskbridge time cleanup --manual
+```
+
+Three fzf pickers, with the same keys as the `backlog link` pickers (`j`/`k` move, `x` marks,
+`/` searches, Enter selects, `Esc` goes back):
+
+1. **Project**: projects with more than one task name, biggest tracked time first. `Esc` here ends
+   the browsing and goes to the summary.
+2. **Same task**: every name in the project, alphabetical so similar names sit together, with entry
+   count, tracked time and last-used date. Mark all names that are the same task.
+3. **Keep name**: pick which marked name to use, or type a new one (no `#tags`; each entry keeps
+   its own).
+
+You return to the project list after each merge to do more. Names reflect merges already accepted
+in the same run. Everything is applied through the same summary, confirmation, `--dry-run` and
+backup as suggested merges.
+
 ## Development
 
 ```bash

@@ -2597,6 +2597,7 @@ class CleanupVariant:
     name: str
     count: int
     seconds: int
+    last_used: datetime
 
 
 @dataclass
@@ -2619,6 +2620,7 @@ class _BartibEntry:
     project: str
     description: str
     seconds: int
+    start: datetime
 
 
 def bartib_file_path() -> Path:
@@ -2652,7 +2654,7 @@ def _parse_bartib_entries(lines: list[str], now: datetime) -> list[_BartibEntry]
         except ValueError:
             continue
         seconds = max(0, int((stop - start).total_seconds()))
-        entries.append(_BartibEntry(line_no, time_part, project, description, seconds))
+        entries.append(_BartibEntry(line_no, time_part, project, description, seconds, start))
     return entries
 
 
@@ -2671,13 +2673,10 @@ def _report_group_resolver(entries: list[_BartibEntry]):
     return group_of
 
 
-def find_cleanup_clusters(
-    lines: list[str], now: datetime, threshold: float = DEFAULT_SIMILARITY_THRESHOLD
-) -> list[CleanupCluster]:
-    """Clusters of near-duplicate task names, biggest tracked time first.
-
-    Names are compared without their #tags and only within one report group.
-    """
+def _collect_cleanup_variants(
+    lines: list[str], now: datetime
+) -> dict[tuple[str, str], dict[str, CleanupVariant]]:
+    """Task names per report group (client, project), compared without their #tags."""
     entries = _parse_bartib_entries(lines, now)
     group_of = _report_group_resolver(entries)
 
@@ -2687,12 +2686,22 @@ def find_cleanup_clusters(
         if not name:
             continue
         variants = stats.setdefault(group_of(entry.project), {})
-        variant = variants.setdefault(name, CleanupVariant(name, 0, 0))
+        variant = variants.setdefault(name, CleanupVariant(name, 0, 0, entry.start))
         variant.count += 1
         variant.seconds += entry.seconds
+        variant.last_used = max(variant.last_used, entry.start)
+    return stats
 
+
+def find_cleanup_clusters(
+    lines: list[str], now: datetime, threshold: float = DEFAULT_SIMILARITY_THRESHOLD
+) -> list[CleanupCluster]:
+    """Clusters of near-duplicate task names, biggest tracked time first.
+
+    Names are compared without their #tags and only within one report group.
+    """
     clusters = []
-    for (client, project), variants in stats.items():
+    for (client, project), variants in _collect_cleanup_variants(lines, now).items():
         ordered = sorted(variants.values(), key=lambda v: (-v.seconds, -v.count, v.name))
         for group in cluster_similar_names([v.name for v in ordered], threshold):
             clusters.append(CleanupCluster(client, project, [variants[n] for n in group]))
@@ -3019,8 +3028,8 @@ def review_cleanup_cluster(cluster: CleanupCluster, position: str) -> dict[str, 
             canonical = variants[int(choice) - 1].name
             selected.add(int(choice) - 1)
         elif choice in ("e", "edit"):
-            clean, tags = split_description_tags(typer.prompt("  New name"))
-            if not clean or tags:
+            clean = _valid_task_name(typer.prompt("  New name"))
+            if clean is None:
                 typer.echo("  The name must be non-empty and contain no #tags.")
             else:
                 canonical = clean
@@ -3043,6 +3052,125 @@ def review_cleanup_cluster(cluster: CleanupCluster, position: str) -> dict[str, 
             typer.echo("  Unrecognized choice.")
 
 
+def _valid_task_name(raw: str) -> str | None:
+    """The cleaned task name, or None if it is empty or carries #tags (tags stay per entry)."""
+    clean, tags = split_description_tags(raw)
+    return clean if clean and not tags else None
+
+
+def compose_cleanup_mappings(
+    first: dict[tuple[str, str, str], str], second: dict[tuple[str, str, str], str]
+) -> dict[tuple[str, str, str], str]:
+    """One mapping equal to applying `first`, then `second` (keyed on post-`first` names)."""
+    result = {
+        (client, project, old): second.get((client, project, new), new)
+        for (client, project, old), new in first.items()
+    }
+    for key, new in second.items():
+        result.setdefault(key, new)
+    return result
+
+
+_FZF_INDEXED = ("--delimiter", "\t", "--with-nth", "2..")
+
+
+def _pick_indexed(rows: list[str], **fzf_kwargs) -> list[int] | None:
+    """Show rows in fzf and return the chosen row indexes; None if cancelled.
+
+    Rows are shown without their index, so names containing any text map back safely.
+    """
+    lines = [f"{i}\t{row}" for i, row in enumerate(rows)]
+    chosen = _run_fzf(lines, fzf_args(browse_keys=True, extra_args=_FZF_INDEXED, **fzf_kwargs))
+    return [int(line.split("\t", 1)[0]) for line in chosen] if chosen else None
+
+
+def _pick_manual_merge(
+    client: str, project: str, variants: list[CleanupVariant]
+) -> dict[tuple[str, str, str], str]:
+    """Let the user mark names that are one task and choose the name to keep.
+
+    Returns {(client, project, old name): kept name}; empty if cancelled or nothing to merge.
+    """
+    names = sorted(variants, key=lambda v: v.name.casefold())  # similar names sit together
+    rows = [
+        f"{v.name}  ({v.count} {'entry' if v.count == 1 else 'entries'}, "
+        f"{format_duration(v.seconds)}, last {v.last_used:%Y-%m-%d})"
+        for v in names
+    ]
+    picked = _pick_indexed(
+        rows,
+        prompt="Same task: ",
+        header=f"{client} / {project}\nMark every name that is the same task",
+        multi=True,
+    )
+    if picked is None:
+        return {}
+    if len(picked) < 2:
+        typer.echo("  Mark at least two names (x), then press enter.")
+        return {}
+
+    chosen = sorted((names[i] for i in picked), key=lambda v: (-v.seconds, -v.count, v.name))
+    choice = _pick_indexed(
+        [v.name for v in chosen] + ["✏  Type a new name…"],
+        prompt="Keep name: ",
+        header="Which name should these entries use?",
+    )
+    if choice is None:
+        return {}
+    if choice[0] < len(chosen):
+        keep = chosen[choice[0]].name
+    else:
+        keep = None
+        while keep is None:
+            raw = typer.prompt("  New name (empty to cancel)", default="", show_default=False)
+            if not raw.strip():
+                return {}
+            keep = _valid_task_name(raw)
+            if keep is None:
+                typer.echo("  The name must contain no #tags.")
+    merged = {(client, project, v.name): keep for v in chosen if v.name != keep}
+    if merged:
+        typer.echo(f"  Merging {len(chosen)} names into: {keep}")
+    return merged
+
+
+def browse_cleanup_merges(
+    lines: list[str], mapping: dict[tuple[str, str, str], str], now: datetime
+) -> dict[tuple[str, str, str], str]:
+    """fzf loop: pick a project, mark names that are one task, pick the name to keep.
+
+    Names are shown as they will be after `mapping`, so earlier decisions are visible.
+    Returns `mapping` extended with the new merges; Esc at the project list ends the loop.
+    """
+    mapping = dict(mapping)
+    while True:
+        current, _ = apply_cleanup_mapping(lines, mapping, now)
+        groups = {
+            key: list(variants.values())
+            for key, variants in _collect_cleanup_variants(current, now).items()
+            if len(variants) > 1
+        }
+        if not groups:
+            typer.echo("No project has more than one task name left to merge.")
+            return mapping
+        keys = sorted(groups, key=lambda k: (-sum(v.seconds for v in groups[k]), k))
+        rows = [
+            f"{client} / {project}  ·  {len(groups[(client, project)])} names, "
+            f"{format_duration(sum(v.seconds for v in groups[(client, project)]))}"
+            for client, project in keys
+        ]
+        picked = _pick_indexed(
+            rows,
+            prompt="Project: ",
+            header="Pick a project to merge task names in; esc when done",
+        )
+        if picked is None:
+            return mapping
+        client, project = keys[picked[0]]
+        step = _pick_manual_merge(client, project, groups[(client, project)])
+        mapping = compose_cleanup_mappings(mapping, step)
+
+
 @time_app.command("cleanup")
 def time_cleanup(
     threshold: float = typer.Option(
@@ -3052,16 +3180,23 @@ def time_cleanup(
         max=1.0,
         help="Name similarity (0.5-1.0) needed to propose a merge; higher is stricter",
     ),
+    manual: bool = typer.Option(
+        False,
+        "--manual",
+        help="Skip the suggestions and go straight to picking names to merge by hand (fzf)",
+    ),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Review and preview the changes, but never write the file"
     ),
 ):
-    """Interactively merge near-duplicate task names in the bartib log.
+    """Interactively merge duplicate task names in the bartib log.
 
-    Names are compared within one client/project, ignoring case, punctuation and #tags;
-    names that differ only in numbers are never proposed. You decide each merge, then
-    confirm a summary. Matching entries are rewritten to the chosen name (keeping their
-    #tags and times), so reports show them as one task. The bartib file is backed up first.
+    First proposes groups of similar names (compared within one client/project, ignoring
+    case, punctuation and #tags; names that differ only in numbers are never proposed),
+    then offers an fzf picker over every name in a project for duplicates no string
+    matching can find. You decide each merge, then confirm a summary. Matching entries
+    are rewritten to the chosen name (keeping their #tags and times), so reports show
+    them as one task. The bartib file is backed up first.
     """
     now = datetime.now()
     try:
@@ -3070,19 +3205,27 @@ def time_cleanup(
         typer.echo(f"❌ {e}")
         raise typer.Exit(1) from None
 
-    clusters = find_cleanup_clusters(lines, now, threshold)
-    if not clusters:
-        typer.echo("No similar task names found.")
-        return
-    typer.echo(f"Found {len(clusters)} group(s) of similar task names.")
-
     mapping: dict[tuple[str, str, str], str] = {}
-    for i, cluster in enumerate(clusters, 1):
-        decision = review_cleanup_cluster(cluster, f"{i}/{len(clusters)}")
-        if decision is None:
-            break
-        for old, new in decision.items():
-            mapping[(cluster.client, cluster.project, old)] = new
+    browse = manual
+    if not manual:
+        clusters = find_cleanup_clusters(lines, now, threshold)
+        stopped = False
+        if clusters:
+            typer.echo(f"Found {len(clusters)} group(s) of similar task names.")
+        else:
+            typer.echo("No similar task names found.")
+        for i, cluster in enumerate(clusters, 1):
+            decision = review_cleanup_cluster(cluster, f"{i}/{len(clusters)}")
+            if decision is None:
+                stopped = True
+                break
+            for old, new in decision.items():
+                mapping[(cluster.client, cluster.project, old)] = new
+        browse = not stopped and typer.confirm(
+            "\nBrowse all task names to merge more by hand (fzf)?", default=False
+        )
+    if browse:
+        mapping = browse_cleanup_merges(lines, mapping, now)
 
     if not mapping:
         typer.echo("\nNothing to merge.")

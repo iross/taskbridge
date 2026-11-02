@@ -10,6 +10,7 @@ from taskbridge.main import (
     app,
     apply_cleanup_mapping,
     build_report_entries,
+    compose_cleanup_mappings,
     find_cleanup_clusters,
     format_report,
     parse_bartib_file,
@@ -144,7 +145,41 @@ class TestReportAfterCleanup:
         assert "1h 50m" in review_row  # 60 + 30 + 20 minutes, tag pills notwithstanding
 
 
+def pick(*needles):
+    """A scripted fzf answer: choose the lines containing each needle, in order."""
+
+    def answer(lines):
+        return [next(line for line in lines if needle in line) for needle in needles]
+
+    return answer
+
+
+class FakeFzf(list):
+    """Scripted fzf: append answers (a function of the lines shown, or None for Esc)."""
+
+    def __init__(self):
+        super().__init__()
+        self.shown: list[list[str]] = []
+
+    def __call__(self, lines, args):
+        self.shown.append(lines)
+        assert self, "unexpected fzf launch"
+        answer = self.pop(0)
+        return None if answer is None else answer(lines)
+
+
+@pytest.fixture
+def fzf(monkeypatch):
+    fake = FakeFzf()
+    monkeypatch.setattr("taskbridge.main._run_fzf", fake)
+    return fake
+
+
 class TestCleanupCommand:
+    @pytest.fixture(autouse=True)
+    def _scripted_fzf(self, fzf):
+        """Any fzf launch the test did not script fails instead of opening a real picker."""
+
     @pytest.fixture
     def bartib(self, tmp_path, monkeypatch):
         path = tmp_path / "activities.bartib"
@@ -156,7 +191,7 @@ class TestCleanupCommand:
         return CliRunner().invoke(app, ["time", "cleanup", *args], input=input)
 
     def test_accept_and_confirm_rewrites_with_backup(self, bartib):
-        result = self.run(input="y\ny\n")
+        result = self.run(input="y\nn\ny\n")
         assert result.exit_code == 0, result.output
         text = bartib.read_text()
         assert "CHTC::htcondor | Review PRs" not in text and "review pr\n" not in text
@@ -165,33 +200,33 @@ class TestCleanupCommand:
         assert len(backups) == 1 and backups[0].read_text() == LOG
 
     def test_skip_writes_nothing(self, bartib):
-        result = self.run(input="n\n")
+        result = self.run(input="n\nn\n")
         assert result.exit_code == 0
         assert "Nothing to merge" in result.output
         assert bartib.read_text() == LOG
         assert not list(bartib.parent.glob("*.bak-*"))
 
     def test_declining_confirmation_writes_nothing(self, bartib):
-        result = self.run(input="y\nn\n")
+        result = self.run(input="y\nn\nn\n")
         assert "Cancelled" in result.output
         assert bartib.read_text() == LOG
 
     def test_dry_run_never_writes(self, bartib):
-        result = self.run("--dry-run", input="y\n")
+        result = self.run("--dry-run", input="y\nn\n")
         assert "2 bartib entries would be rewritten" in result.output
         assert bartib.read_text() == LOG
         assert not list(bartib.parent.glob("*.bak-*"))
 
     def test_choose_other_name_as_canonical(self, bartib):
         # Pick variant 2 ("Review PRs") as the name to keep.
-        result = self.run(input="2\ny\ny\n")
+        result = self.run(input="2\ny\nn\ny\n")
         assert result.exit_code == 0, result.output
         text = bartib.read_text()
         assert text.count("CHTC::htcondor | Review PRs") == 3
         assert "| Review PR #review" not in text
 
     def test_edit_name_rejects_tags_then_accepts(self, bartib):
-        result = self.run(input="e\nBad #tag\ne\nCode review\ny\ny\n")
+        result = self.run(input="e\nBad #tag\ne\nCode review\ny\nn\ny\n")
         assert "no #tags" in result.output
         text = bartib.read_text()
         assert text.count("| Code review") == 3
@@ -199,7 +234,7 @@ class TestCleanupCommand:
 
     def test_select_subset(self, bartib):
         # Merge only variants 1 and 2; the lowercase one stays.
-        result = self.run(input="s\n1,2\ny\ny\n")
+        result = self.run(input="s\n1,2\ny\nn\ny\n")
         assert result.exit_code == 0, result.output
         text = bartib.read_text()
         assert "| review pr\n" in text
@@ -215,3 +250,96 @@ class TestCleanupCommand:
         result = self.run(input="")
         assert result.exit_code == 1
         assert "BARTIB_FILE" in result.output
+
+
+class TestManualMerge:
+    """`time cleanup --manual`: the user marks duplicates no string matching can find."""
+
+    FABAID = (
+        "2026-10-01 09:00 - 2026-10-01 10:00 | CHTC::fabaid | "
+        "Fabaid Sync with Tony and Nova #meeting\n"
+        "2026-10-02 09:00 - 2026-10-02 09:30 | CHTC::fabaid | Fabaid chat with Nova and Tony\n"
+        "2026-10-03 09:00 - 2026-10-03 09:20 | CHTC::fabaid | Budget review\n"
+    )
+
+    @pytest.fixture
+    def bartib(self, tmp_path, monkeypatch):
+        path = tmp_path / "activities.bartib"
+        path.write_text(self.FABAID)
+        monkeypatch.setenv("BARTIB_FILE", str(path))
+        return path
+
+    def run(self, *args, input):
+        return CliRunner().invoke(app, ["time", "cleanup", "--manual", *args], input=input)
+
+    def test_string_matching_misses_them_but_manual_merge_works(self, bartib, fzf):
+        assert find_cleanup_clusters(self.FABAID.splitlines(keepends=True), NOW) == []
+        fzf += [
+            pick("CHTC / fabaid"),
+            pick("Fabaid Sync", "Fabaid chat"),
+            pick("Fabaid Sync with Tony and Nova"),
+            None,  # Esc at the project list: done
+        ]
+        result = self.run(input="y\n")
+        assert result.exit_code == 0, result.output
+        assert bartib.read_text() == (
+            self.FABAID.replace("Fabaid chat with Nova and Tony", "Fabaid Sync with Tony and Nova")
+        )
+
+    def test_type_a_new_name(self, bartib, fzf):
+        fzf += [
+            pick("CHTC / fabaid"),
+            pick("Fabaid Sync", "Fabaid chat"),
+            pick("Type a new name"),
+            None,
+        ]
+        result = self.run(input="Fabaid sync\ny\n")
+        assert result.exit_code == 0, result.output
+        text = bartib.read_text()
+        assert "| Fabaid sync #meeting\n" in text  # the entry's own tag is kept
+        assert "| Fabaid sync\n" in text
+        assert "Budget review" in text
+
+    def test_marking_a_single_name_merges_nothing(self, bartib, fzf):
+        fzf += [pick("CHTC / fabaid"), pick("Budget review"), None]
+        result = self.run(input="")
+        assert "Mark at least two" in result.output
+        assert "Nothing to merge" in result.output
+        assert bartib.read_text() == self.FABAID
+
+    def test_esc_in_name_picker_returns_to_projects(self, bartib, fzf):
+        fzf += [pick("CHTC / fabaid"), None, None]
+        result = self.run(input="")
+        assert "Nothing to merge" in result.output
+        assert bartib.read_text() == self.FABAID
+
+    def test_names_shown_reflect_earlier_suggestions(self, tmp_path, monkeypatch, fzf):
+        # Auto pass merges "Review PRs" into "Review PR"; the picker must show the post-merge names.
+        path = tmp_path / "other.bartib"
+        path.write_text(LOG)
+        monkeypatch.setenv("BARTIB_FILE", str(path))
+        fzf += [pick("CHTC / htcondor"), None, None]
+        # review: select 1,2 and merge; offer to browse: y; (picker shows names) Esc; confirm y
+        result = CliRunner().invoke(app, ["time", "cleanup"], input="s\n1,2\ny\ny\ny\n")
+        assert result.exit_code == 0, result.output
+        names_shown = "\n".join(fzf.shown[1])
+        assert "Review PRs" not in names_shown
+        assert "Review PR " in names_shown and "review pr" in names_shown
+
+
+class TestComposeMappings:
+    def test_second_step_applies_to_names_first_step_produced_and_to_untouched_names(self):
+        first = {("C", "P", "a"): "b"}
+        second = {("C", "P", "b"): "c"}
+        assert compose_cleanup_mappings(first, second) == {
+            ("C", "P", "a"): "c",
+            ("C", "P", "b"): "c",
+        }
+
+    def test_independent_steps_are_kept(self):
+        first = {("C", "P", "a"): "b"}
+        second = {("C", "P", "x"): "y"}
+        assert compose_cleanup_mappings(first, second) == {
+            ("C", "P", "a"): "b",
+            ("C", "P", "x"): "y",
+        }
