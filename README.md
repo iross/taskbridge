@@ -100,6 +100,29 @@ any GitHub pull requests containing them. Merges and commits that only touch `ba
 out. Commits link to GitHub once pushed; PRs need the `gh` CLI. Put the task ID in commit
 messages (e.g. `Add archive command (task-45)`) for this to find them.
 
+## Merging similar task names in time history
+
+Time entries for one piece of work often drift into slightly different descriptions ("Review PR",
+"Review PRs", "review pr"), which splits them into separate rows in `time report`. `time cleanup`
+finds those and rewrites the bartib log (`$BARTIB_FILE`) so they report as one task:
+
+```bash
+taskbridge time cleanup               # review each group, then confirm a summary
+taskbridge time cleanup --dry-run     # same review, never writes
+taskbridge time cleanup --threshold 0.92   # stricter matching (default 0.85, range 0.5-1.0)
+```
+
+Names are compared within one client/project, ignoring case, punctuation and `#tags`. Names that
+differ only in numbers ("Sprint 12" / "Sprint 13") are never proposed. Each group lists its
+variants with entry counts and tracked time, suggesting the one with the most time as the name to
+keep. Per group: `y` merge, `n` (or Enter) skip, `1`-`N` keep that variant's name, `e` type a new
+name, `s` merge only some variants, `q` stop reviewing.
+
+Nothing is written until you confirm the final summary. Rewritten entries keep their own `#tags`,
+times and project; only the description changes. The log is copied to
+`<file>.bak-<timestamp>` first. Decisions are not remembered, so a rejected group is offered
+again on the next run.
+
 ## Development
 
 ```bash

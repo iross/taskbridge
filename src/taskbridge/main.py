@@ -12,6 +12,8 @@ import typer
 
 from . import backlog, backlog_archive, inbox
 from .bartib_integration import BartibIntegration
+from .cleanup import DEFAULT_THRESHOLD as DEFAULT_SIMILARITY_THRESHOLD
+from .cleanup import cluster_similar_names
 from .config import TEMPLATE_KINDS
 from .config import config as config_manager
 from .database import TaskTimeTracking, TodoistNoteMapping, db, is_real_todoist_task_id
@@ -2583,6 +2585,170 @@ def parse_bartib_file(from_dt: datetime, to_dt: datetime) -> list[TaskTimeTracki
     return records
 
 
+# ----------------------------------------------------------------------------
+# Task-name cleanup: merge near-duplicate descriptions in bartib history
+# ----------------------------------------------------------------------------
+
+
+@dataclass
+class CleanupVariant:
+    """One spelling of a task name within a project, with its tracked totals."""
+
+    name: str
+    count: int
+    seconds: int
+
+
+@dataclass
+class CleanupCluster:
+    """Near-duplicate task names in one report group (client, project)."""
+
+    client: str
+    project: str
+    variants: list[CleanupVariant]  # most tracked time first; [0] is the suggested canonical name
+
+    @property
+    def seconds(self) -> int:
+        return sum(v.seconds for v in self.variants)
+
+
+@dataclass
+class _BartibEntry:
+    line_no: int
+    time_part: str
+    project: str
+    description: str
+    seconds: int
+
+
+def bartib_file_path() -> Path:
+    """Path of the bartib activity file from BARTIB_FILE; RuntimeError if unset."""
+    import os
+
+    bartib_file = os.environ.get("BARTIB_FILE")
+    if not bartib_file:
+        raise RuntimeError(
+            "BARTIB_FILE environment variable is not set. "
+            "Set it to the path of your bartib activity log."
+        )
+    return Path(bartib_file)
+
+
+def _parse_bartib_entries(lines: list[str], now: datetime) -> list[_BartibEntry]:
+    """Entry lines of a bartib file; comments, blanks and malformed lines are skipped.
+
+    A running entry (no stop time) is credited up to `now`.
+    """
+    entries = []
+    for line_no, line in enumerate(lines):
+        parts = line.strip().split(" | ", 2)
+        if len(parts) != 3:
+            continue
+        time_part, project, description = parts
+        try:
+            start_str, _, stop_str = time_part.partition(" - ")
+            start = datetime.strptime(start_str.strip(), "%Y-%m-%d %H:%M")
+            stop = datetime.strptime(stop_str.strip(), "%Y-%m-%d %H:%M") if stop_str else now
+        except ValueError:
+            continue
+        seconds = max(0, int((stop - start).total_seconds()))
+        entries.append(_BartibEntry(line_no, time_part, project, description, seconds))
+    return entries
+
+
+def _report_group_resolver(entries: list[_BartibEntry]):
+    """Return a function mapping a raw bartib project to its report group (client, project).
+
+    Mirrors build_report_entries so that two raw spellings the report shows as one
+    project (client aliases, dropped suffixes) are treated as one here as well.
+    """
+    known_clients = {parse_project_segments(e.project)[0] for e in entries if "::" in e.project}
+
+    def group_of(project: str) -> tuple[str, str]:
+        client, name, _ = parse_project_segments(project, known_clients)
+        return client, name
+
+    return group_of
+
+
+def find_cleanup_clusters(
+    lines: list[str], now: datetime, threshold: float = DEFAULT_SIMILARITY_THRESHOLD
+) -> list[CleanupCluster]:
+    """Clusters of near-duplicate task names, biggest tracked time first.
+
+    Names are compared without their #tags and only within one report group.
+    """
+    entries = _parse_bartib_entries(lines, now)
+    group_of = _report_group_resolver(entries)
+
+    stats: dict[tuple[str, str], dict[str, CleanupVariant]] = {}
+    for entry in entries:
+        name, _ = split_description_tags(entry.description)
+        if not name:
+            continue
+        variants = stats.setdefault(group_of(entry.project), {})
+        variant = variants.setdefault(name, CleanupVariant(name, 0, 0))
+        variant.count += 1
+        variant.seconds += entry.seconds
+
+    clusters = []
+    for (client, project), variants in stats.items():
+        ordered = sorted(variants.values(), key=lambda v: (-v.seconds, -v.count, v.name))
+        for group in cluster_similar_names([v.name for v in ordered], threshold):
+            clusters.append(CleanupCluster(client, project, [variants[n] for n in group]))
+    clusters.sort(key=lambda c: (-c.seconds, c.client, c.project, c.variants[0].name))
+    return clusters
+
+
+def apply_cleanup_mapping(
+    lines: list[str], mapping: dict[tuple[str, str, str], str], now: datetime
+) -> tuple[list[str], int]:
+    """Rename task names in bartib lines; return (new lines, number of entries changed).
+
+    `mapping` is {(client, project, old name): new name}, with the group as returned
+    by the report. Each entry keeps its own #tags, time range and raw project string;
+    every other line is returned untouched.
+    """
+    entries = _parse_bartib_entries(lines, now)
+    group_of = _report_group_resolver(entries)
+
+    new_lines = list(lines)
+    changed = 0
+    for entry in entries:
+        name, tags = split_description_tags(entry.description)
+        client, project = group_of(entry.project)
+        new_name = mapping.get((client, project, name))
+        if new_name is None or new_name == name:
+            continue
+        original = lines[entry.line_no]
+        ending = original[len(original.rstrip("\r\n")) :]
+        description = " ".join([new_name, *(f"#{t}" for t in tags)])
+        new_lines[entry.line_no] = f"{entry.time_part} | {entry.project} | {description}{ending}"
+        changed += 1
+    return new_lines, changed
+
+
+def rename_bartib_tasks(
+    mapping: dict[tuple[str, str, str], str], now: datetime
+) -> tuple[int, Path | None]:
+    """Apply a task-name mapping to the bartib file, after backing it up.
+
+    The file is re-read here, so entries added since the mapping was built are
+    renamed too. Returns (entries changed, backup path); no backup when nothing changed.
+    """
+    import shutil
+
+    path = bartib_file_path()
+    lines = path.read_text().splitlines(keepends=True)
+    new_lines, changed = apply_cleanup_mapping(lines, mapping, now)
+    if not changed:
+        return 0, None
+    backup = path.with_name(f"{path.name}.bak-{now:%Y%m%d-%H%M%S}")
+    shutil.copy2(path, backup)
+    path.write_text("".join(new_lines))
+    return changed, backup
+
+
 def stop_tracking_internal(tracking: TaskTimeTracking) -> tuple[bool, int]:
     """Stop bartib tracking and update records.
 
@@ -2803,6 +2969,142 @@ def time_tags():
     typer.echo(f"Found {len(tag_seconds)} tag(s):")
     for tag in sorted(tag_seconds, key=str.lower):
         typer.echo(f"  {format_tag_pill(tag)}  {format_duration(tag_seconds[tag])}")
+
+
+def review_cleanup_cluster(cluster: CleanupCluster, position: str) -> dict[str, str] | None:
+    """Ask the user what to do with one cluster of similar task names.
+
+    Returns {old name: new name} for the merge the user accepted, {} to skip the
+    cluster, or None to stop reviewing.
+    """
+    variants = cluster.variants
+    canonical = variants[0].name
+    selected = set(range(len(variants)))
+    while True:
+        typer.echo(f"\n[{position}] {cluster.client} / {cluster.project}")
+        for i, v in enumerate(variants):
+            box = "x" if i in selected else " "
+            arrow = "→" if v.name == canonical else " "
+            noun = "entry" if v.count == 1 else "entries"
+            typer.echo(
+                f"  {i + 1}. [{box}] {arrow} {v.name}  "
+                f"({v.count} {noun}, {format_duration(v.seconds)})"
+            )
+        typer.echo(f"  Merge into: {canonical}")
+        choice = (
+            typer.prompt(
+                f"  [y]es  [n]o  [1-{len(variants)}] use that name  "
+                "[e]dit name  [s]elect variants  [q]uit",
+                default="n",
+                show_default=False,
+            )
+            .strip()
+            .lower()
+        )
+
+        if choice in ("y", "yes"):
+            mapping = {
+                variants[i].name: canonical
+                for i in sorted(selected)
+                if variants[i].name != canonical
+            }
+            if mapping:
+                return mapping
+            typer.echo("  Nothing to merge: select a variant other than the new name.")
+        elif choice in ("n", "no", "skip"):
+            return {}
+        elif choice in ("q", "quit"):
+            return None
+        elif choice.isdigit() and 1 <= int(choice) <= len(variants):
+            canonical = variants[int(choice) - 1].name
+            selected.add(int(choice) - 1)
+        elif choice in ("e", "edit"):
+            clean, tags = split_description_tags(typer.prompt("  New name"))
+            if not clean or tags:
+                typer.echo("  The name must be non-empty and contain no #tags.")
+            else:
+                canonical = clean
+        elif choice in ("s", "select"):
+            try:
+                picks = {
+                    int(x) - 1
+                    for x in typer.prompt("  Merge which (e.g. 1,3)").replace(",", " ").split()
+                }
+            except ValueError:
+                picks = set()
+            if not picks or not all(0 <= p < len(variants) for p in picks):
+                typer.echo(f"  Enter numbers between 1 and {len(variants)}.")
+            else:
+                selected = picks
+                names = {v.name for v in variants}
+                if canonical in names and canonical not in {variants[i].name for i in selected}:
+                    canonical = variants[min(selected)].name
+        else:
+            typer.echo("  Unrecognized choice.")
+
+
+@time_app.command("cleanup")
+def time_cleanup(
+    threshold: float = typer.Option(
+        DEFAULT_SIMILARITY_THRESHOLD,
+        "--threshold",
+        min=0.5,
+        max=1.0,
+        help="Name similarity (0.5-1.0) needed to propose a merge; higher is stricter",
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Review and preview the changes, but never write the file"
+    ),
+):
+    """Interactively merge near-duplicate task names in the bartib log.
+
+    Names are compared within one client/project, ignoring case, punctuation and #tags;
+    names that differ only in numbers are never proposed. You decide each merge, then
+    confirm a summary. Matching entries are rewritten to the chosen name (keeping their
+    #tags and times), so reports show them as one task. The bartib file is backed up first.
+    """
+    now = datetime.now()
+    try:
+        lines = bartib_file_path().read_text().splitlines(keepends=True)
+    except (RuntimeError, OSError) as e:
+        typer.echo(f"❌ {e}")
+        raise typer.Exit(1) from None
+
+    clusters = find_cleanup_clusters(lines, now, threshold)
+    if not clusters:
+        typer.echo("No similar task names found.")
+        return
+    typer.echo(f"Found {len(clusters)} group(s) of similar task names.")
+
+    mapping: dict[tuple[str, str, str], str] = {}
+    for i, cluster in enumerate(clusters, 1):
+        decision = review_cleanup_cluster(cluster, f"{i}/{len(clusters)}")
+        if decision is None:
+            break
+        for old, new in decision.items():
+            mapping[(cluster.client, cluster.project, old)] = new
+
+    if not mapping:
+        typer.echo("\nNothing to merge.")
+        return
+
+    _, changed = apply_cleanup_mapping(lines, mapping, now)
+    typer.echo("\nPlanned renames:")
+    for (client, project, old), new in mapping.items():
+        typer.echo(f"  {client} / {project}: {old} → {new}")
+    typer.echo(f"{changed} bartib entr{'y' if changed == 1 else 'ies'} would be rewritten.")
+
+    if dry_run:
+        typer.echo("Dry run: nothing written.")
+        return
+    if not typer.confirm("Rewrite the bartib file?", default=False):
+        typer.echo("Cancelled; nothing written.")
+        return
+
+    changed, backup = rename_bartib_tasks(mapping, now)
+    typer.echo(f"✅ Rewrote {changed} entr{'y' if changed == 1 else 'ies'}.")
+    if backup:
+        typer.echo(f"   Backup: {backup}")
 
 
 @time_app.command("report")
