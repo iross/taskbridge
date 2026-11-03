@@ -90,3 +90,20 @@ class TestSetList:
         result = frontmatter.set_list([], "k", [value])
 
         assert frontmatter.load(result)["k"] == [value]
+
+
+class TestSetValue:
+    def test_replaces_scalar_in_place(self):
+        result = frontmatter.set_value(["a: 1", "project: old", "b: 2"], "project", "new")
+        assert result == ["a: 1", "project: new", "b: 2"]
+
+    def test_quotes_wikilink_so_it_stays_a_string(self):
+        result = frontmatter.set_value([], "project", "[[Picker]]")
+        assert frontmatter.load(result) == {"project": "[[Picker]]"}
+
+    def test_replaces_block_list_with_scalar(self):
+        result = frontmatter.set_value(["tags:", "  - a", "x: 1"], "tags", "")
+        assert result == ["tags: ''", "x: 1"]
+
+    def test_appends_missing_key(self):
+        assert frontmatter.set_value(["a: 1"], "due", "") == ["a: 1", "due: ''"]

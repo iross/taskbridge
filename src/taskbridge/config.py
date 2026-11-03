@@ -11,6 +11,8 @@ import requests
 import typer
 import yaml
 
+from taskbridge import frontmatter
+
 
 @dataclass(frozen=True)
 class TemplateKind:
@@ -22,6 +24,9 @@ class TemplateKind:
     tag: str
     noun: str
 
+
+TASK_TEMPLATE = "templates/task.md"
+"""Vault-relative Obsidian template whose frontmatter seeds new task notes."""
 
 TEMPLATE_KINDS = {
     "meeting": TemplateKind(
@@ -450,40 +455,44 @@ class Config:
         status: str = "backlog",
         tags: list | None = None,
     ) -> Path:
-        """Create a task-specific note with frontmatter."""
-        if tags is None:
-            tags = []
+        """Create a task note whose frontmatter builds on the vault's task template.
 
+        Fixed keys (fileClass, obsidianEditingMode, ...) are copied verbatim from
+        TASK_TEMPLATE's frontmatter; the Templater script body is not. An existing
+        note is left untouched.
+
+        Raises:
+            ValueError: If the vault isn't configured or the template's frontmatter is malformed.
+        """
         self.create_project_directory(project_name)
         note_path = self.task_note_path(project_name, task_title)
+        if note_path.exists():
+            return note_path
 
-        # Create frontmatter
-        frontmatter = {
-            "fileClass": "task",
-            "project": project_name,
+        lines = self._task_template_frontmatter()
+        computed = {
+            "project": f"[[{project_name.split('/')[-1]}]]",
             "status": status,
             "client": client,
-            "tags": tags,
             "due": "",
         }
-
-        # Only create the note if it doesn't already exist
-        if not note_path.exists():
-            # Write the note with frontmatter
-            with open(note_path, "w") as f:
-                f.write("---\n")
-                for key, value in frontmatter.items():
-                    if isinstance(value, list):
-                        if value:
-                            f.write(f"{key}: {value}\n")
-                        else:
-                            f.write(f"{key}: []\n")
-                    else:
-                        f.write(f"{key}: {value}\n")
-                f.write("---\n\n")
-                f.write(f"# {task_title}\n\n")
-
+        for key, value in computed.items():
+            lines = frontmatter.set_value(lines, key, value)
+        lines = frontmatter.set_list(lines, "tags", list(tags or []))
+        note_path.write_text(frontmatter.join(lines, "\n"))
         return note_path
+
+    def _task_template_frontmatter(self) -> list[str]:
+        template = Path(self.get_obsidian_vault_path()) / TASK_TEMPLATE
+        if not template.exists():
+            return ["fileClass: task"]
+        try:
+            lines, _ = frontmatter.split(template.read_text())
+            if lines is not None:
+                frontmatter.load(lines)
+        except frontmatter.FrontmatterError as e:
+            raise ValueError(f"Task template {template} has malformed frontmatter: {e}") from e
+        return lines or ["fileClass: task"]
 
     def generate_obsidian_url(self, project_name: str, file_name: str) -> str:
         """Generate Obsidian URL for opening a specific file."""

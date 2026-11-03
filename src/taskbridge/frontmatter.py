@@ -50,6 +50,16 @@ def set_list(lines: list[str], key: str, values: list[str]) -> list[str]:
         block = [f"{key}:"] + ["  " + item for item in dumped.splitlines()]
     else:
         block = [f"{key}: []"]
+    return _replace(lines, key, block)
+
+
+def set_value(lines: list[str], key: str, value: str) -> list[str]:
+    """Replace `key` with a scalar `value` (quoted only when YAML needs it), or append it."""
+    dumped = yaml.safe_dump({key: value}, allow_unicode=True, width=1000)
+    return _replace(lines, key, dumped.splitlines())
+
+
+def _replace(lines: list[str], key: str, block: list[str]) -> list[str]:
     result: list[str] = []
     replaced = False
     in_key = False
