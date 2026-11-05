@@ -19,7 +19,7 @@ from .config import TEMPLATE_KINDS
 from .config import config as config_manager
 from .database import TaskTimeTracking, TodoistNoteMapping, db, is_real_todoist_task_id
 from .provenance import RepoHistory
-from .task_notes import resolve_project_info
+from .task_notes import ensure_day_heading, resolve_project_info
 from .todoist_api import TodoistAPI, TodoistProject, TodoistTask
 
 # Main app
@@ -1029,9 +1029,10 @@ def task_note(
             except Exception as e:
                 typer.echo(f"⚠️  Warning: Could not start time tracking: {e}")
 
-        # Open note if requested
-        if open_note and config_manager.open_obsidian_note(project_name, note_path.name):
-            typer.echo("📖 Opened note in Obsidian")
+        if open_note:
+            ensure_day_heading(note_path)
+            if config_manager.open_obsidian_note(project_name, note_path.name):
+                typer.echo("📖 Opened note in Obsidian")
 
     except Exception as e:
         typer.echo(f"❌ Error: {e}")

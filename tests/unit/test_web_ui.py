@@ -568,3 +568,26 @@ class TestHandleStartBackfill:
         assert "needs both From and To" in payload["error"]
         assert bartib_file.read_text() == ""
         stop.assert_not_called()
+
+
+class TestGetOrCreateTaskNoteHeading:
+    """The web UI's note buttons open the note under today's heading (task-56)."""
+
+    def test_adds_today_heading_to_the_mapped_note(self, tmp_path, monkeypatch):
+        note = tmp_path / "n.md"
+        note.write_text("---\n---\n")
+        mapping = TodoistNoteMapping(
+            todoist_task_id="t1",
+            todoist_project_id="p1",
+            note_path=str(note),
+            obsidian_url="obsidian://open?file=n.md",
+        )
+        monkeypatch.setattr(
+            web_ui.task_notes, "get_or_create_task_note", lambda task_id: (mapping, False)
+        )
+
+        url, is_new = web_ui._get_or_create_task_note("t1")
+
+        assert (url, is_new) == ("obsidian://open?file=n.md", False)
+        today = web_ui.task_notes.day_heading(datetime.now().date())
+        assert note.read_text().endswith(f"\n\n{today}\n")

@@ -1914,8 +1914,9 @@ HTML = """<!DOCTYPE html>
 
 
 def _get_or_create_task_note(task_id: str) -> tuple[str, bool]:
-    """Return (obsidian_url, is_new) for the note mapped to a Todoist task."""
+    """Return (obsidian_url, is_new) for a task's note, ready for today's entries."""
     mapping, is_new = task_notes.get_or_create_task_note(task_id)
+    task_notes.ensure_day_heading(Path(mapping.note_path))
     return mapping.obsidian_url, is_new
 
 

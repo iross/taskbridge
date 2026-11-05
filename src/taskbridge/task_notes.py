@@ -1,6 +1,8 @@
 """Obsidian notes for Todoist tasks: where they go and how they are created."""
 
 import contextlib
+from datetime import date
+from pathlib import Path
 
 from .config import config as config_manager
 from .database import TodoistNoteMapping, db
@@ -82,3 +84,28 @@ def get_or_create_task_note(
         api.create_comment(task_id, f"📝 Obsidian note: [Open Note]({mapping.obsidian_url})")
 
     return mapping, True
+
+
+def day_heading(day: date) -> str:
+    """The H1 that starts a day's entries in a task note, e.g. '# 05.November.2026'."""
+    return f"# {day:%d.%B.%Y}"
+
+
+def ensure_day_heading(note_path: Path, day: date | None = None) -> bool:
+    """Append the day's heading (default today) unless the note already has it.
+
+    A missing note is left alone: it has been moved or deleted in Obsidian, and
+    recreating it here would leave a stray file.
+
+    Returns:
+        True if the heading was added.
+    """
+    if not note_path.exists():
+        return False
+    heading = day_heading(day or date.today())
+    text = note_path.read_text()
+    if heading in (line.rstrip() for line in text.splitlines()):
+        return False
+    body = text.rstrip("\n")
+    note_path.write_text(f"{body}\n\n{heading}\n")
+    return True
