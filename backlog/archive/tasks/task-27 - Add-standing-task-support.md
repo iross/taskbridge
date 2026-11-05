@@ -4,6 +4,7 @@ title: Add ♾️ standing task support
 status: To Do
 assignee: []
 created_date: '2026-06-17 13:04'
+updated_date: '2026-11-05 14:54'
 labels: []
 dependencies: []
 priority: medium
@@ -27,3 +28,9 @@ below the radar in normal views but be easily surfaced when needed.
 - [ ] `taskbridge task done` warns and requires explicit confirmation before completing a task that carries the `♾️` label
 - [ ] The standing task label used for all of the above is configurable in taskbridge config, defaulting to `♾️`
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Superseded by 'taskbridge ongoing' (ongoing define/list/start and the web UI's ∞ Ongoing button), which keeps never-closing work as config-defined tracking anchors instead of a Todoist ♾️ label synced to todo.txt. Closed without implementing the label approach.
+<!-- SECTION:NOTES:END -->
