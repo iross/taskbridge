@@ -475,3 +475,96 @@ class TestActivityEditReassignsProject:
         assert self._edit(0, "2026-01-08T11:00:00")["success"]
 
         assert running.get_active_tracking().project_name == "Inbox"
+
+
+class TestStartWindow:
+    """_start_window turns the Start form's date/From/To into datetimes (task-30)."""
+
+    def test_no_times_means_start_now(self):
+        assert web_ui._start_window({}) == (None, None)
+
+    def test_times_default_to_today(self):
+        start, end = web_ui._start_window({"time_from": "09:00", "time_to": "09:30"})
+        assert start is not None and end is not None
+        assert start.date() == end.date() == datetime.now().date()
+        assert (start.hour, end.minute) == (9, 30)
+
+    def test_date_places_backfill_on_that_day(self):
+        start, end = web_ui._start_window(
+            {"date": "2026-11-02", "time_from": "13:05", "time_to": "13:40"}
+        )
+        assert (start, end) == (datetime(2026, 11, 2, 13, 5), datetime(2026, 11, 2, 13, 40))
+
+    @pytest.mark.parametrize(
+        ("body", "message"),
+        [
+            ({"time_to": "10:00"}, "To needs a From"),
+            ({"date": "2026-11-02", "time_from": "10:00"}, "needs both From and To"),
+            ({"date": "2026-11-02"}, "needs both From and To"),
+            ({"time_from": "10:00", "time_to": "10:00"}, "To must be after From"),
+            ({"date": "2026-13-02", "time_from": "10:00", "time_to": "11:00"}, "Invalid"),
+            ({"time_from": "25:00", "time_to": "26:00"}, "Invalid"),
+        ],
+    )
+    def test_rejects_bad_windows(self, body, message):
+        with pytest.raises(ValueError, match=message):
+            web_ui._start_window(body)
+
+
+class TestHandleStartBackfill:
+    """/api/start with a past date writes a completed entry and leaves tracking alone."""
+
+    @pytest.fixture
+    def bartib_file(self, tmp_path, monkeypatch):
+        path = tmp_path / "activities.bartib"
+        path.write_text("")
+        monkeypatch.setenv("BARTIB_FILE", str(path))
+        return path
+
+    def start(self, body):
+        handler = web_ui.TimeWebHandler.__new__(web_ui.TimeWebHandler)
+        handler._send_json = MagicMock()
+        handler._handle_start(body)
+        args = handler._send_json.call_args.args
+        return args[0], (args[1] if len(args) > 1 else 200)
+
+    def test_writes_entry_on_given_day_without_stopping_active(
+        self, test_db, bartib_file, monkeypatch
+    ):
+        stop = MagicMock()
+        monkeypatch.setattr(web_ui, "_stop_active", stop)
+        test_db.create_tracking_record(
+            todoist_task_id="", project_name="p", task_name="Now", started_at=datetime.now()
+        )
+
+        payload, status = self.start(
+            {
+                "description": "Reviewed PRs",
+                "project_raw": "CHTC::htcondor",
+                "date": "2026-11-02",
+                "time_from": "13:05",
+                "time_to": "13:40",
+            }
+        )
+
+        assert (status, payload["success"]) == (200, True)
+        assert bartib_file.read_text() == (
+            "2026-11-02 13:05 - 2026-11-02 13:40 | CHTC::htcondor | Reviewed PRs\n"
+        )
+        stop.assert_not_called()
+        assert test_db.get_active_tracking() is not None
+
+    def test_bad_window_is_rejected_before_anything_changes(
+        self, test_db, bartib_file, monkeypatch
+    ):
+        stop = MagicMock()
+        monkeypatch.setattr(web_ui, "_stop_active", stop)
+
+        payload, status = self.start(
+            {"description": "x", "project_raw": "p", "date": "2026-11-02", "time_from": "13:05"}
+        )
+
+        assert status == 400
+        assert "needs both From and To" in payload["error"]
+        assert bartib_file.read_text() == ""
+        stop.assert_not_called()

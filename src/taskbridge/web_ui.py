@@ -166,6 +166,13 @@ HTML = """<!DOCTYPE html>
       color: var(--muted);
       padding: 2px 0;
     }
+    .time-gap.fillable { cursor: pointer; border-radius: 3px; }
+    .time-gap.fillable:hover { color: var(--accent); background: rgba(128,128,128,0.06); }
+    .backfill-note { font-size: 0.75rem; color: var(--accent); margin: -6px 0 12px; }
+    .backfill-note button {
+      background: none; border: none; color: var(--muted); cursor: pointer;
+      font: inherit;
+    }
     .time-gap::before, .time-gap::after {
       content: '';
       flex: 1;
@@ -561,6 +568,10 @@ HTML = """<!DOCTYPE html>
         <label for="time-to">To <span class="opt">optional — completes entry</span></label>
         <input id="time-to" type="time">
       </div>
+    </div>
+    <div id="backfill-note" class="backfill-note" hidden>
+      Backfilling a gap on <span id="backfill-day"></span>
+      <button onclick="clearBackfill()" title="Back to logging today">&#10005; clear</button>
     </div>
     <div class="form-actions">
       <span class="err" id="form-err"></span>
@@ -1052,7 +1063,9 @@ HTML = """<!DOCTYPE html>
             var gapMs = new Date(a.started_at).getTime() - new Date(next.stopped_at).getTime();
             var gapMins = Math.round(gapMs / 60000);
             if (gapMins > 10) {
-              html += '<div class="time-gap">' + gapMins + ' min gap</div>';
+              html += '<div class="time-gap fillable" data-from="' + esc(next.stopped_at) +
+                '" data-to="' + esc(a.started_at) + '" onclick="backfillGap(this)" ' +
+                'title="Log this gap">' + gapMins + ' min gap</div>';
             }
           }
         }
@@ -1538,14 +1551,17 @@ HTML = """<!DOCTYPE html>
     if (timeTo && !timeFrom) { errEl.textContent = 'To needs a From time'; return; }
     if (timeFrom) body.time_from = timeFrom;
     if (timeTo) body.time_to = timeTo;
+    if (backfillDate) {
+      if (!timeTo) { errEl.textContent = 'A backfill needs a To time (or clear it)'; return; }
+      body.date = backfillDate;
+    }
     fetch('/api/start', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
       .then(function(r){ return r.json(); }).then(function(data) {
         if (data.success) {
           document.getElementById('description').value = '';
           document.getElementById('task-search').value = '';
           document.getElementById('task-id').value = '';
-          document.getElementById('time-from').value = '';
-          document.getElementById('time-to').value = '';
+          clearBackfill();
           loadTags();
           isMeeting = false;
           document.getElementById('btn-meeting').classList.remove('on');
@@ -1555,6 +1571,27 @@ HTML = """<!DOCTYPE html>
           errEl.textContent = data.error || 'Failed to start';
         }
       }).catch(function() { errEl.textContent = 'Network error'; });
+  }
+
+  var backfillDate = '';
+
+  function backfillGap(el) {
+    document.getElementById('time-from').value = fmtTime(el.dataset.from);
+    document.getElementById('time-to').value = fmtTime(el.dataset.to);
+    backfillDate = el.dataset.to.slice(0, 10);
+    document.getElementById('backfill-day').textContent = fmtDay(el.dataset.to);
+    document.getElementById('backfill-note').hidden = false;
+    document.getElementById('form-err').textContent = '';
+    var desc = document.getElementById('description');
+    desc.scrollIntoView({block: 'center', behavior: 'smooth'});
+    desc.focus({preventScroll: true});
+  }
+
+  function clearBackfill() {
+    backfillDate = '';
+    document.getElementById('backfill-note').hidden = true;
+    document.getElementById('time-from').value = '';
+    document.getElementById('time-to').value = '';
   }
 
   function stopTracking() {
@@ -2141,6 +2178,33 @@ def _parse_bartib_for_day(target_date: datetime) -> list:
     return records
 
 
+def _start_window(body: dict) -> tuple[datetime | None, datetime | None]:
+    """The From/To window of a /api/start request as datetimes.
+
+    `time_from`/`time_to` are HH:MM on `date` (YYYY-MM-DD, default today). A `date`
+    is only accepted with both times, since a live session can't start on another day.
+
+    Raises:
+        ValueError: On a malformed date or time, a date without both times, or To <= From.
+    """
+    date_str = body.get("date", "").strip()
+    time_from = body.get("time_from", "").strip()
+    time_to = body.get("time_to", "").strip()
+    if time_to and not time_from:
+        raise ValueError("To needs a From time")
+    if date_str and not time_to:
+        raise ValueError(f"Backfilling {date_str} needs both From and To")
+    day = date_str or datetime.now().strftime("%Y-%m-%d")
+    try:
+        start = datetime.strptime(f"{day} {time_from}", "%Y-%m-%d %H:%M") if time_from else None
+        end = datetime.strptime(f"{day} {time_to}", "%Y-%m-%d %H:%M") if time_to else None
+    except ValueError as e:
+        raise ValueError(f"Invalid date/time ({day} {time_from}-{time_to}): {e}") from e
+    if start and end and end <= start:
+        raise ValueError("To must be after From")
+    return start, end
+
+
 def _append_bartib_entry(project: str, description: str, start: datetime, end: datetime) -> None:
     """Append a completed entry directly to the bartib file."""
     bartib_file = os.environ.get("BARTIB_FILE", "")
@@ -2439,11 +2503,11 @@ class TimeWebHandler(BaseHTTPRequestHandler):
             if is_meeting:
                 todoist_task_id = f"meeting:{description}"
 
-            active = db.get_active_tracking()
-            if active:
-                _stop_active(active)
-
-            bartib = BartibIntegration()
+            try:
+                start_dt, end_dt = _start_window(body)
+            except ValueError as e:
+                self._send_json({"success": False, "error": str(e)}, 400)
+                return
 
             # If a specific task is linked, resolve project+labels from the task itself.
             # Otherwise fall back to the dropdown-selected project.
@@ -2482,37 +2546,25 @@ class TimeWebHandler(BaseHTTPRequestHandler):
                 task_labels.append("meeting")
             description = append_tags_to_description(description, task_labels)
 
-            time_from = body.get("time_from", "").strip()  # HH:MM or ""
-            time_to = body.get("time_to", "").strip()  # HH:MM or ""
-
-            today = datetime.now().strftime("%Y-%m-%d")
-            if time_from and time_to:
-                # Completed past entry — write directly, no live session
+            if start_dt and end_dt:
+                # Completed past entry: written directly, any running session keeps going.
                 from .main import append_bartib_entry
 
-                start_dt = datetime.strptime(f"{today} {time_from}", "%Y-%m-%d %H:%M")
-                end_dt = datetime.strptime(f"{today} {time_to}", "%Y-%m-%d %H:%M")
-                if end_dt <= start_dt:
-                    self._send_json({"success": False, "error": "To must be after From"}, 400)
-                    return
                 append_bartib_entry(bartib_project, description, start_dt, end_dt)
             else:
-                # Live session — optionally backdated
-                bartib.start_tracking(
+                active = db.get_active_tracking()
+                if active:
+                    _stop_active(active)
+                BartibIntegration().start_tracking(
                     description=description,
                     project=bartib_project,
-                    start_time=time_from or None,
-                )
-                started_at = (
-                    datetime.strptime(f"{today} {time_from}", "%Y-%m-%d %H:%M")
-                    if time_from
-                    else datetime.now()
+                    start_time=start_dt.strftime("%H:%M") if start_dt else None,
                 )
                 db.create_tracking_record(
                     todoist_task_id=todoist_task_id,
                     project_name=bartib_project,
                     task_name=description,
-                    started_at=started_at,
+                    started_at=start_dt or datetime.now(),
                 )
             self._send_json({"success": True, "project": bartib_project})
 
