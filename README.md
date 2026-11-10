@@ -109,11 +109,26 @@ taskbridge time report --month            # current month
 taskbridge time report --month 10         # most recent October (not in the future)
 taskbridge time report --month 2025-10    # an exact month
 taskbridge time report --from 2026-10-05 --to 2026-10-09
+taskbridge time report --week --email     # compact summary for pasting into email
 ```
 
 A bare month number is the latest such month not after the current one: in November 2026, `10` is
 October 2026 and `12` is December 2025. `--month` cannot be combined with the other range options.
 Multi-day reports start with a per-day total and flag past days with no time logged.
+
+`--email` works with any range and prints a plain-text summary instead: the total time, each
+client's share of it, each project's share of its client, and the task names under each project
+(no durations, tags or per-day totals):
+
+```
+2026-11-09 – 2026-11-15 (10h 29m)
+
+CHTC 0.86
+  - LLMs: 0.33
+    - Switch to LiteLLM as the model gateway Oct 15
+  - Other: 0.25
+    - Email & task management
+```
 
 ## Merging similar task names in time history
 

@@ -539,3 +539,84 @@ class TestTimeReportMonthOption:
         result = self.run("--month", "--week")
         assert result.exit_code == 1
         assert "cannot be combined" in result.output
+
+
+# ============================================================================
+# --email (task-58)
+# ============================================================================
+
+
+class TestFormatEmailReport:
+    def report(self, *entries):
+        from taskbridge.main import ReportEntry, format_email_report
+
+        return format_email_report(
+            "2026-11-10",
+            [ReportEntry(c, p, d, s, ["tag"]) for c, p, d, s in entries],
+        )
+
+    def test_empty(self):
+        assert self.report() == "No tracked time found for this period."
+
+    def test_shares_per_level_largest_first_without_durations_or_tags(self):
+        output = self.report(
+            ("PATh", "ops", "Pager", 1800),
+            ("CHTC", "LLMs", "Gateway", 3600),
+            ("CHTC", "LLMs", "frpc", 5400),
+            ("CHTC", "Other", "Email", 1800),
+        )
+
+        assert output == (
+            "2026-11-10 (3h 30m)\n"
+            "\n"
+            "CHTC 0.86\n"
+            "  - LLMs: 0.83\n"
+            "    - frpc\n"
+            "    - Gateway\n"
+            "  - Other: 0.17\n"
+            "    - Email\n"
+            "PATh 0.14\n"
+            "  - ops: 1.00\n"
+            "    - Pager"
+        )
+
+    def test_repeated_description_listed_once(self):
+        output = self.report(("CHTC", "LLMs", "Gateway", 60), ("CHTC", "LLMs", "Gateway", 60))
+        assert output.count("Gateway") == 1
+
+
+class TestTimeReportEmailFlag:
+    @pytest.fixture
+    def log(self, tmp_path, monkeypatch):
+        path = tmp_path / "activities.bartib"
+        path.write_text(
+            "2026-11-02 09:00 - 2026-11-02 10:00 | CHTC::LLMs | Gateway #ops\n"
+            "2026-11-03 09:00 - 2026-11-03 10:00 | PATh::site | Docs\n"
+        )
+        monkeypatch.setenv("BARTIB_FILE", str(path))
+
+    def run(self, *args):
+        from typer.testing import CliRunner
+
+        from taskbridge.main import app
+
+        return CliRunner().invoke(app, ["time", "report", "--email", *args])
+
+    def test_range_prints_only_the_email_summary(self, log):
+        result = self.run("--from", "2026-11-02", "--to", "2026-11-03")
+
+        assert result.exit_code == 0, result.output
+        assert result.output == (
+            "2026-11-02 – 2026-11-03 (2h 0m)\n"
+            "\n"
+            "CHTC 0.50\n"
+            "  - LLMs: 1.00\n"
+            "    - Gateway\n"
+            "PATh 0.50\n"
+            "  - site: 1.00\n"
+            "    - Docs\n"
+        )
+
+    def test_empty_day(self, log):
+        result = self.run("--date", "2026-11-05")
+        assert result.output == "No tracked time found for this period.\n"

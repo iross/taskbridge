@@ -2338,6 +2338,38 @@ def format_report(entries: list[ReportEntry]) -> str:
     return "\n".join(lines)
 
 
+def format_email_report(label: str, entries: list[ReportEntry]) -> str:
+    """Format entries as a compact plain-text share-of-time summary for email.
+
+    Clients show their fraction of total time and projects their fraction of the
+    client's time, largest first; descriptions are listed without durations or tags.
+    """
+    if not entries:
+        return "No tracked time found for this period."
+
+    from collections import defaultdict
+
+    total = sum(e.seconds for e in entries)
+    clients: dict[str, int] = defaultdict(int)
+    projects: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    descs: dict[tuple[str, str], dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for e in entries:
+        clients[e.client] += e.seconds
+        projects[e.client][e.project] += e.seconds
+        descs[(e.client, e.project)][e.description] += e.seconds
+
+    def largest_first(seconds: dict[str, int]) -> list[str]:
+        return sorted(seconds, key=lambda k: seconds[k], reverse=True)
+
+    lines = [f"{label} ({format_duration(total)})", ""]
+    for client in largest_first(clients):
+        lines.append(f"{client} {clients[client] / total:.2f}")
+        for project in largest_first(projects[client]):
+            lines.append(f"  - {project}: {projects[client][project] / clients[client]:.2f}")
+            lines.extend(f"    - {d}" for d in largest_first(descs[(client, project)]))
+    return "\n".join(lines)
+
+
 def find_workday_gaps(
     records: list[TaskTimeTracking],
     work_start: datetime,
@@ -3308,6 +3340,11 @@ def time_report(
             "recent October (not in the future), --month 2025-10 an exact month"
         ),
     ),
+    email: bool = typer.Option(
+        False,
+        "--email",
+        help="Compact plain-text summary (shares of time, no durations) for pasting into email",
+    ),
 ):
     """Daily summary report grouped by client and project."""
     from datetime import timedelta
@@ -3342,6 +3379,9 @@ def time_report(
 
         records = parse_bartib_file(start, end)
         entries = build_report_entries(records, now=datetime.now())
+        if email:
+            typer.echo(format_email_report(label, entries))
+            return
         report = format_report(entries)
 
         typer.echo(f"Report: {label}\n")
