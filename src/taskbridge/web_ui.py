@@ -5,7 +5,7 @@ import json
 import os
 import re
 import webbrowser
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, urlparse
 from . import task_notes
 from .bartib_integration import BartibIntegration
 from .database import db, is_real_todoist_task_id
-from .todoist_api import TodoistAPI
+from .todoist_api import TodoistAPI, TodoistTask
 
 HTML = """<!DOCTYPE html>
 <html lang="en">
@@ -2102,14 +2102,24 @@ def _get_todoist_projects() -> list[dict]:
         return []
 
 
+def _picker_rank(task: TodoistTask, today: date) -> int:
+    """0 for tasks due today, 1 for overdue, 2 for everything else (incl. no or bad due)."""
+    due_date = (task.due or {}).get("date", "")
+    try:
+        due = date.fromisoformat(due_date[:10])
+    except (TypeError, ValueError):
+        return 2
+    if due == today:
+        return 0
+    return 1 if due < today else 2
+
+
 def _get_todoist_tasks(project_id: str) -> list[dict]:
-    api = TodoistAPI()
-    tasks = api.get_tasks(project_id=project_id or None)
-    return [
-        {"id": t.id, "content": t.content, "project_id": t.project_id}
-        for t in tasks
-        if not t.is_completed
-    ]
+    """Open Todoist tasks for the task picker: today's first, then overdue, then the rest."""
+    tasks = [t for t in TodoistAPI().get_tasks(project_id=project_id or None) if not t.is_completed]
+    today = date.today()
+    tasks.sort(key=lambda t: _picker_rank(t, today))
+    return [{"id": t.id, "content": t.content, "project_id": t.project_id} for t in tasks]
 
 
 def _get_recent_bartib_projects(limit: int = 10) -> list[str]:

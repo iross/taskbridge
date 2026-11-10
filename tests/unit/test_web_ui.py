@@ -12,7 +12,7 @@ import pytest
 
 from taskbridge import web_ui
 from taskbridge.database import Database, TodoistNoteMapping
-from taskbridge.todoist_api import TodoistProject
+from taskbridge.todoist_api import TodoistProject, TodoistTask
 
 
 @pytest.fixture
@@ -591,3 +591,55 @@ class TestGetOrCreateTaskNoteHeading:
         assert (url, is_new) == ("obsidian://open?file=n.md", False)
         today = web_ui.task_notes.day_heading(datetime.now().date())
         assert note.read_text().endswith(f"\n\n{today}\n")
+
+
+class TestTaskPickerOrder:
+    """The Start form's task picker lists today's, then overdue, then other tasks (task-57)."""
+
+    TODAY = datetime.now().date()
+
+    def task(self, task_id, due=None, completed=False):
+        return TodoistTask(
+            id=task_id,
+            content=task_id,
+            description="",
+            project_id="p1",
+            due=due,
+            is_completed=completed,
+        )
+
+    def picker_ids(self, monkeypatch, tasks):
+        api = MagicMock()
+        api.return_value.get_tasks.return_value = tasks
+        monkeypatch.setattr(web_ui, "TodoistAPI", api)
+        return [t["id"] for t in web_ui._get_todoist_tasks("")]
+
+    def day(self, offset):
+        return (self.TODAY + timedelta(days=offset)).isoformat()
+
+    def test_today_then_overdue_then_rest_keeping_order(self, monkeypatch):
+        tasks = [
+            self.task("none"),
+            self.task("old-overdue", {"date": self.day(-200)}),
+            self.task("tomorrow", {"date": self.day(1)}),
+            self.task("today", {"date": self.day(0)}),
+            self.task("bad", {"date": "someday"}),
+            self.task("timed-today", {"date": self.day(0) + "T09:30:00"}),
+            self.task("overdue", {"date": self.day(-3)}),
+            self.task("empty-due", {}),
+        ]
+
+        assert self.picker_ids(monkeypatch, tasks) == [
+            "today",
+            "timed-today",
+            "old-overdue",
+            "overdue",
+            "none",
+            "tomorrow",
+            "bad",
+            "empty-due",
+        ]
+
+    def test_completed_tasks_are_dropped(self, monkeypatch):
+        tasks = [self.task("done", {"date": self.day(0)}, completed=True), self.task("open")]
+        assert self.picker_ids(monkeypatch, tasks) == ["open"]
