@@ -1025,7 +1025,7 @@ HTML = """<!DOCTYPE html>
     allActivities = acts;
     var el = document.getElementById('activities');
     if (!acts.length) {
-      el.innerHTML = '<p style="color:var(--muted);font-size:.83rem">No activities in the last 7 days.</p>';
+      el.innerHTML = '<p style="color:var(--muted);font-size:.83rem">No activities since the start of last week.</p>';
       return;
     }
     var groups = {};
@@ -1092,11 +1092,27 @@ HTML = """<!DOCTYPE html>
       (reportPercentMode ? '%' : '⏱') + '</span>';
   }
 
-  function startOfWeek() {
-    var d = new Date();
+  function startOfWeek(date) {
+    var d = new Date(date);
     d.setHours(0, 0, 0, 0);
     d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
     return d;
+  }
+
+  function weekKeyOf(dayKey) {
+    return startOfWeek(new Date(dayKey)).getTime();
+  }
+
+  function inWeek(a, weekKey) {
+    return weekKeyOf(a.started_at) === weekKey;
+  }
+
+  function weekLabel(weekKey) {
+    var thisWeek = startOfWeek(new Date());
+    if (weekKey === thisWeek.getTime()) return 'This Week';
+    thisWeek.setDate(thisWeek.getDate() - 7);
+    if (weekKey === thisWeek.getTime()) return 'Last Week';
+    return 'Week of ' + new Date(weekKey).toLocaleDateString('en-US', {month:'short', day:'numeric'});
   }
 
   function reportKeys(a) {
@@ -1177,13 +1193,13 @@ HTML = """<!DOCTYPE html>
     if (!dayKey) dayKey = new Date().toDateString();
     lastReportDayKey = dayKey;
     var dayActs = acts.filter(function(a) { return new Date(a.started_at).toDateString() === dayKey; });
-    var weekStart = startOfWeek();
-    var weekActs = acts.filter(function(a) { return new Date(a.started_at) >= weekStart; });
+    var weekKey = weekKeyOf(dayKey);
+    var weekActs = acts.filter(function(a) { return inWeek(a, weekKey); });
     document.getElementById('daily-report').innerHTML =
       '<div data-scope="day">' +
       reportSectionHtml(dayLabels[dayKey] || dayKey, dayActs, {withToggle: true, showDescs: true}) +
       '</div><div data-scope="week">' +
-      reportSectionHtml('This Week', weekActs, {extraClass: ' report-week-heading'}) + '</div>';
+      reportSectionHtml(weekLabel(weekKey), weekActs, {extraClass: ' report-week-heading'}) + '</div>';
     applyReportHover();
   }
 
@@ -1191,7 +1207,7 @@ HTML = """<!DOCTYPE html>
     var hl = JSON.parse(state.hl);
     var start = new Date(a.started_at);
     if (state.scope === 'day' && state.dayKey && start.toDateString() !== state.dayKey) return false;
-    if (state.scope === 'week' && start < startOfWeek()) return false;
+    if (state.scope === 'week' && !inWeek(a, state.weekKey)) return false;
     var pd = parseTags(a.description);
     if (hl[0] === 'tag') return pd.tags.indexOf(hl[1]) >= 0;
     var keys = reportKeys(a);
@@ -1204,7 +1220,12 @@ HTML = """<!DOCTYPE html>
   function hlState(row) {
     if (!row) return null;
     var scope = row.closest('[data-scope]').getAttribute('data-scope');
-    return {hl: row.getAttribute('data-hl'), scope: scope, dayKey: scope === 'day' ? lastReportDayKey : null};
+    return {
+      hl: row.getAttribute('data-hl'),
+      scope: scope,
+      dayKey: scope === 'day' ? lastReportDayKey : null,
+      weekKey: scope === 'week' ? weekKeyOf(lastReportDayKey) : null
+    };
   }
 
   function pinState(row) {
@@ -1965,14 +1986,19 @@ def _known_tags() -> list[str]:
     return sorted(counts, key=lambda t: (-counts[t], t.lower()))
 
 
-def _read_activities(days: int = 7) -> list[dict]:
-    """Read activities from bartib file, newest first, for the last N days."""
+def _timeline_start(now: datetime) -> datetime:
+    """Monday 00:00 of the week before `now`'s, so the timeline holds whole Mon–Sun weeks."""
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return midnight - timedelta(days=now.weekday() + 7)
+
+
+def _read_activities(since: datetime) -> list[dict]:
+    """Read activities from bartib file that started at or after `since`, newest first."""
     bartib_file = os.environ.get("BARTIB_FILE", "")
     if not bartib_file:
         return []
 
-    cutoff = datetime.now() - timedelta(days=days)
-    task_ids_by_start = _tracking_task_ids(cutoff)
+    task_ids_by_start = _tracking_task_ids(since)
     note_urls_by_task = {m.todoist_task_id: m.obsidian_url for m in db.get_all_todoist_mappings()}
     activities: list[dict] = []
 
@@ -1999,7 +2025,7 @@ def _read_activities(days: int = 7) -> list[dict]:
                     duration = None
                     active = True
 
-                if started_at < cutoff:
+                if started_at < since:
                     continue
 
                 task_id = task_ids_by_start.get(started_at.isoformat(), "")
@@ -2458,7 +2484,7 @@ class TimeWebHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _handle_status(self):
-        activities = _read_activities(days=7)
+        activities = _read_activities(since=_timeline_start(datetime.now()))
         active = db.get_active_tracking()
         current = None
         if active and active.started_at:

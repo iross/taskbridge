@@ -98,7 +98,7 @@ class TestReadActivities:
             )
         )
 
-        activities = web_ui._read_activities(days=7)
+        activities = web_ui._read_activities(since=datetime.now() - timedelta(days=7))
 
         assert len(activities) == 1
         assert activities[0]["todoist_task_id"] == "task-123"
@@ -117,7 +117,7 @@ class TestReadActivities:
         )
         monkeypatch.setenv("BARTIB_FILE", str(bartib_file))
 
-        activities = web_ui._read_activities(days=7)
+        activities = web_ui._read_activities(since=datetime.now() - timedelta(days=7))
 
         assert activities[0]["todoist_task_id"] == ""
         assert activities[0]["note_url"] is None
@@ -140,10 +140,42 @@ class TestReadActivities:
             started_at=datetime.strptime(line_start, "%Y-%m-%d %H:%M"),
         )
 
-        activities = web_ui._read_activities(days=7)
+        activities = web_ui._read_activities(since=datetime.now() - timedelta(days=7))
 
         assert activities[0]["todoist_task_id"] == ""
         assert activities[0]["note_url"] is None
+
+    def test_excludes_activities_started_before_since(self, tmp_path, monkeypatch, test_db):
+        bartib_file = self._write_bartib(
+            tmp_path,
+            [
+                "2026-11-08 23:00 - 2026-11-09 00:30 | taskbridge | Before cutoff",
+                "2026-11-09 00:00 - 2026-11-09 01:00 | taskbridge | At cutoff",
+                "2026-11-12 09:00 - 2026-11-12 10:00 | taskbridge | After cutoff",
+            ],
+        )
+        monkeypatch.setenv("BARTIB_FILE", str(bartib_file))
+
+        activities = web_ui._read_activities(since=datetime(2026, 11, 9))
+
+        assert [a["description"] for a in activities] == ["After cutoff", "At cutoff"]
+
+
+class TestTimelineStart:
+    """The timeline starts on the Monday of the previous week."""
+
+    @pytest.mark.parametrize(
+        ("now", "expected"),
+        [
+            (datetime(2026, 11, 16, 0, 0), datetime(2026, 11, 9)),
+            (datetime(2026, 11, 18, 14, 30, 5), datetime(2026, 11, 9)),
+            (datetime(2026, 11, 22, 23, 59), datetime(2026, 11, 9)),
+            (datetime(2026, 11, 23, 8, 0), datetime(2026, 11, 16)),
+            (datetime(2027, 1, 1, 12, 0), datetime(2026, 12, 21)),
+        ],
+    )
+    def test_is_monday_midnight_of_previous_week(self, now, expected):
+        assert web_ui._timeline_start(now) == expected
 
 
 def _act(start: str, stop: str | None) -> dict:
@@ -279,7 +311,8 @@ class TestReadActivitiesLineNumbers:
         path.write_text(f"{start} - {stop} | m | A\n\n{start} - {stop} | m | B\n")
         monkeypatch.setenv("BARTIB_FILE", str(path))
 
-        by_desc = {a["description"]: a["line_no"] for a in web_ui._read_activities(days=7)}
+        activities = web_ui._read_activities(since=datetime.now() - timedelta(days=7))
+        by_desc = {a["description"]: a["line_no"] for a in activities}
 
         assert by_desc == {"A": 0, "B": 2}
 
